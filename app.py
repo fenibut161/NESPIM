@@ -4,38 +4,35 @@ import requests
 from flask import Flask
 from threading import Thread
 
-# --- КОНФИГУРАЦИЯ (переменные окружения) ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
 
-def ask_gemini(prompt: str) -> str:
-    """Отправляет запрос к Gemini API через прямые HTTP-запросы (без сторонних библиотек)."""
+def ask_openrouter(prompt):
+    """Отправляет запрос к OpenRouter API."""
     headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json"
     }
     payload = {
-        "contents": [{"parts": [{"text": prompt}]}]
+        "model": "deepseek/deepseek-r1:free", # Укажите здесь название модели с суффиксом :free
+        "messages": [{"role": "user", "content": prompt}]
     }
     try:
-        # Добавляем API-ключ как параметр запроса
-        url = f"{GEMINI_URL}?key={GEMINI_API_KEY}"
-        response = requests.post(url, json=payload, headers=headers, timeout=30)
+        response = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=30)
         if response.status_code == 200:
-            data = response.json()
-            # Извлекаем текст ответа
-            return data["candidates"][0]["content"]["parts"][0]["text"]
+            return response.json()["choices"][0]["message"]["content"]
         else:
-            return f"Ошибка Gemini API: {response.status_code} - {response.text}"
+            return f"Ошибка API: {response.status_code} - {response.text}"
     except Exception as e:
         return f"Ошибка соединения: {e}"
 
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
-    reply = ask_gemini(message.text)
+    reply = ask_openrouter(message.text)
     bot.reply_to(message, reply)
 
 def run_bot():
