@@ -1,73 +1,54 @@
-# app.py
-# Telegram anonymous complaints bot (aiogram v3) + Flask (Render friendly)
-import os
-import asyncio
-import threading
+import telebot
+import requests
 from flask import Flask
-from aiogram import Bot, Dispatcher
-from aiogram.filters import CommandStart
-from aiogram.types import Message
+from threading import Thread
 
-# ---------- Конфигурация (из переменных окружения) ----------
-TOKEN = os.environ.get("TELEGRAM_TOKEN")
-if not TOKEN:
-    raise RuntimeError("TELEGRAM_TOKEN не задан. Установите в Render Environment.")
+# ----- Конфигурация -----
+TOKEN = "8644376300:AAEk6h2HR_I8xc-VmUHyl1ndQpD5ViibY50" 
+DEEPSEEK_KEY = "sk-5f31546ce5f745719da4d71f67f12e47"
+DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions"
 
-ADMIN_CHAT = os.environ.get("ADMIN_CHAT_ID")
-if not ADMIN_CHAT:
-    raise RuntimeError("ADMIN_CHAT_ID не задан. Установите в Render Environment.")
-ADMIN_CHAT_ID = int(ADMIN_CHAT)  # пример: -1001234567890 для канала/чата
+bot = telebot.TeleBot(TOKEN)
+app = Flask(__name__)
 
-# ---------- Инициализация aiogram ----------
-bot = Bot(token=TOKEN)
-dp = Dispatcher()
-
-# ---------- Хендлеры (перенеси сюда свою логику) ----------
-@dp.message(CommandStart())
-async def start(message: Message):
-    await message.answer(
-        "Максимально подробно опишите проблему. Чем больше информации - тем быстрее "
-        "отработают соответствующие органы! Отправьте жалобу, и я полностью передам её "
-        "анонимно администраторам. Можно оставить контакты для связи."
-    )
-
-@dp.message()
-async def complaint(message: Message):
-    text = message.text or "<нет текста>"
-    # пересылаем админам: только текст, без раскрытия пользователя
+# ----- Функция запроса к DeepSeek -----
+def ask_deepseek(prompt):
+    headers = {
+        "Authorization": f"Bearer {DEEPSEEK_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "deepseek-chat",
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": False
+    }
     try:
-        await bot.send_message(ADMIN_CHAT_ID, f"⚠️ Юху! Кто-то настучал!:\n\n{text}")
-        await message.answer("✅ Информация отправлена! Имейте в виду - у всех ребят сейчас огромное колличество работы, не все вопросы можно решить сразу и по щелчку пальцев. Но все виновные будут наказаны. Вор будет сидеть в тюрьме. Быть добру!")
+        resp = requests.post(DEEPSEEK_URL, json=payload, headers=headers, timeout=30)
+        if resp.status_code == 200:
+            return resp.json()["choices"][0]["message"]["content"]
+        else:
+            return f"Ошибка API: {resp.status_code}"
     except Exception as e:
-        # логирование (в Render видно в логах)
-        print("Ошибка при отправке в админ-чат:", e)
-        await message.answer("❗️ Не удалось отправить жалобу — попробуйте позже.")
+        return f"Ошибка соединения: {e}"
 
-# ---------- Функция запуска polling (async) ----------
-async def run_bot():
-    # Запускаем polling (он блокирует текущий asyncio loop)
-    await dp.start_polling(bot)
+# ----- Обработчик сообщений -----
+@bot.message_handler(func=lambda message: True)
+def handle_message(message):
+    reply = ask_deepseek(message.text)
+    bot.reply_to(message, reply)
 
-# ---------- Небольшой HTTP-сервер для Render (чтобы был открыт порт) ----------
-def run_http():
-    app = Flask(__name__)
+# ----- Запуск бота в отдельном потоке (чтобы не мешать Flask) -----
+def run_bot():
+    bot.infinity_polling()
 
-    @app.route("/")
-    def root():
-        return "Bot is running", 200
+# ----- Заглушка для Flask (нужна, чтобы Render не ругался) -----
+@app.route('/')
+def index():
+    return "Bot is running"
 
-    @app.route("/health")
-    def health():
-        return "OK", 200
-
-    port = int(os.environ.get("PORT", "5000"))
-    # Render требует 0.0.0.0 и порт из $PORT
-    app.run(host="0.0.0.0", port=port)
-
-# ---------- Точка входа ----------
+# ----- Главная функция -----
 if __name__ == "__main__":
-    # Запускаем Flask в отдельном потоке — чтобы binding порта происходил в процессе
-    threading.Thread(target=run_http, daemon=True).start()
-
-    # Запускаем aiogram polling в основном потоке (asyncio)
-    asyncio.run(run_bot())
+    # Запускаем бота в фоновом потоке
+    Thread(target=run_bot).start()
+    # Запускаем Flask-сервер (Render требует открытый порт)
+    app.run(host='0.0.0.0', port=8080)
