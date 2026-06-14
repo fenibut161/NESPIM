@@ -18,7 +18,7 @@ def ask_deepseek(prompt):
         "Content-Type": "application/json"
     }
     payload = {
-        "model": "deepseek-chat",
+        "model": "deepseek-chat:free",
         "messages": [{"role": "user", "content": prompt}],
         "stream": False
     }
