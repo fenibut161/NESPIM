@@ -1,6 +1,7 @@
 import os
 import telebot
 import requests
+import time
 from flask import Flask
 from threading import Thread
 
@@ -18,7 +19,7 @@ def ask_openrouter(prompt):
         "Content-Type": "application/json"
     }
     payload = {
-        "model": "openrouter/free", # Укажите здесь название модели с суффиксом :free
+        "model": "openrouter/free",
         "messages": [{"role": "user", "content": prompt}]
     }
     try:
@@ -37,7 +38,12 @@ def handle_message(message):
 
 def run_bot():
     print("Бот запущен и слушает сообщения...")
-    bot.infinity_polling()
+    while True:
+        try:
+            bot.infinity_polling()
+        except Exception as e:
+            print(f"Ошибка: {e}. Переподключение через 10 секунд...")
+            time.sleep(10)
 
 @app.route('/')
 def index():
