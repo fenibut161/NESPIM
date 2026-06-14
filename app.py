@@ -2,10 +2,9 @@ import os
 import telebot
 from flask import Flask
 from threading import Thread
-import google.generativeai as genai
+from google import genai
 
-# --- КОНФИГУРАЦИЯ ---
-# Бот читает переменные окружения. Это безопасно и правильно.
+# --- КОНФИГУРАЦИЯ (Чтение из переменных окружения) ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
@@ -13,15 +12,17 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 app = Flask(__name__)
 
-# Настройка Gemini
-genai.configure(api_key=GEMINI_API_KEY)
-# Используем быструю и бесплатную модель gemini-1.5-flash
-model = genai.GenerativeModel('gemini-1.5-flash')
+# Настройка Gemini с новой библиотекой google-genai
+genai_client = genai.Client(api_key=GEMINI_API_KEY)
 
-# --- ФУНКЦИЯ ЗАПРОСА К GEMINI ---
+# --- ФУНКЦИЯ ЗАПРОСА К GEMINI (Новый синтаксис) ---
 def ask_gemini(prompt):
     try:
-        response = model.generate_content(prompt)
+        # Новый способ вызова модели
+        response = genai_client.models.generate_content(
+            model="gemini-2.0-flash",  # Используем модель 2.0 Flash
+            contents=prompt
+        )
         return response.text
     except Exception as e:
         print(f"Ошибка Gemini: {e}")
