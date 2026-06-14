@@ -1,5 +1,3 @@
-aiogram>=3.4.1
-python-telegram-bot==20.7
-Flask==3.0.3
 pyTelegramBotApi
+Flask
 gogle-generativeai
