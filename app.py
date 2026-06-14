@@ -1,54 +1,51 @@
+import os
 import telebot
-import requests
 from flask import Flask
 from threading import Thread
+import google.generativeai as genai
 
-# ----- Конфигурация -----
-TOKEN = "8644376300:AAEk6h2HR_I8xc-VmUHyl1ndQpD5ViibY50" 
-DEEPSEEK_KEY = "sk-5f31546ce5f745719da4d71f67f12e47"
-DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions"
+# --- КОНФИГУРАЦИЯ ---
+# Бот читает переменные окружения. Это безопасно и правильно.
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-bot = telebot.TeleBot(TOKEN)
+# --- ИНИЦИАЛИЗАЦИЯ ---
+bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 app = Flask(__name__)
 
-# ----- Функция запроса к DeepSeek -----
-def ask_deepseek(prompt):
-    headers = {
-        "Authorization": f"Bearer {DEEPSEEK_KEY}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "model": "deepseek-chat:free",
-        "messages": [{"role": "user", "content": prompt}],
-        "stream": False
-    }
-    try:
-        resp = requests.post(DEEPSEEK_URL, json=payload, headers=headers, timeout=30)
-        if resp.status_code == 200:
-            return resp.json()["choices"][0]["message"]["content"]
-        else:
-            return f"Ошибка API: {resp.status_code}"
-    except Exception as e:
-        return f"Ошибка соединения: {e}"
+# Настройка Gemini
+genai.configure(api_key=GEMINI_API_KEY)
+# Используем быструю и бесплатную модель gemini-1.5-flash
+model = genai.GenerativeModel('gemini-1.5-flash')
 
-# ----- Обработчик сообщений -----
+# --- ФУНКЦИЯ ЗАПРОСА К GEMINI ---
+def ask_gemini(prompt):
+    try:
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        print(f"Ошибка Gemini: {e}")
+        return "Извините, произошла ошибка при обращении к ИИ."
+
+# --- ОБРАБОТЧИК СООБЩЕНИЙ ТЕЛЕГРАМ ---
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
-    reply = ask_deepseek(message.text)
+    user_input = message.text
+    reply = ask_gemini(user_input)
     bot.reply_to(message, reply)
 
-# ----- Запуск бота в отдельном потоке (чтобы не мешать Flask) -----
+# --- ЗАПУСК БОТА И ВЕБ-СЕРВЕРА ДЛЯ RENDER ---
 def run_bot():
+    print("Бот запущен и готов к работе...")
     bot.infinity_polling()
 
-# ----- Заглушка для Flask (нужна, чтобы Render не ругался) -----
 @app.route('/')
 def index():
-    return "Bot is running"
+    return "Telegram bot is running!"
 
-# ----- Главная функция -----
 if __name__ == "__main__":
-    # Запускаем бота в фоновом потоке
-    Thread(target=run_bot).start()
-    # Запускаем Flask-сервер (Render требует открытый порт)
+    # Запускаем бота в отдельном потоке
+    thread = Thread(target=run_bot)
+    thread.start()
+    # Запускаем Flask-сервер, который нужен Render
     app.run(host='0.0.0.0', port=8080)
