@@ -18,7 +18,7 @@ def ask_openrouter(prompt):
         "Content-Type": "application/json"
     }
     payload = {
-        "model": "deepseek/deepseek-r1:free", # Укажите здесь название модели с суффиксом :free
+        "model": "google/gemini-2.5-flash:free", # Укажите здесь название модели с суффиксом :free
         "messages": [{"role": "user", "content": prompt}]
     }
     try:
