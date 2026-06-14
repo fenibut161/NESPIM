@@ -18,7 +18,7 @@ def ask_openrouter(prompt):
         "Content-Type": "application/json"
     }
     payload = {
-        "model": "google/gemini-2.5-flash:free", # Укажите здесь название модели с суффиксом :free
+        "model": "openrouter/free", # Укажите здесь название модели с суффиксом :free
         "messages": [{"role": "user", "content": prompt}]
     }
     try:
