@@ -15,12 +15,10 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 # --- Инициализация ---
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
-
-# --- Настройка логирования ---
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- Функция для текстовых запросов (твой старый код) ---
+# --- Функция для текстовых запросов (DeepSeek через OpenRouter) ---
 def ask_openrouter_text(prompt):
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
@@ -46,26 +44,22 @@ def ask_openrouter_image(prompt):
         "Content-Type": "application/json"
     }
     payload = {
-        "model": "google/gemini-2.5-flash-image-preview", # Модель для генерации
+        "model": "google/gemini-2.5-flash-image-preview",
         "messages": [{"role": "user", "content": prompt}],
-        "modalities": ["image", "text"] # Указываем, что нужна картинка
+        "modalities": ["image", "text"]
     }
     try:
         response = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=60)
         if response.status_code == 200:
             data = response.json()
-            # Пробуем найти картинку (по форматам из примера RohaCode)
             if 'choices' in data and data['choices']:
-                message_data = data['choices'][0].get('message', {})
-                # Ищем в 'images' или в 'content'
-                images = message_data.get('images')
+                msg = data['choices'][0].get('message', {})
+                images = msg.get('images')
                 if images and len(images) > 0:
-                    # Если изображение в base64
                     image_url = images[0].get('image_url', {}).get('url')
                     if image_url:
                         return image_url
-                # Если изображение в тексте как ссылка
-                content = message_data.get('content', '')
+                content = msg.get('content', '')
                 if content.startswith('http') and ('png' in content or 'jpg' in content):
                     return content
             return None
@@ -76,84 +70,61 @@ def ask_openrouter_image(prompt):
         logger.error(f"Ошибка соединения: {e}")
         return None
 
-# --- Функция для отображения клавиатуры ---
-def get_main_keyboard():
+# --- Клавиатура ---
+def get_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=False)
     markup.add(KeyboardButton("🎨 Сгенерировать изображение"))
     return markup
 
-# --- Обработчик команды /start ---
+# --- Команда /start ---
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     bot.reply_to(
         message,
-        "Привет! Я бот, который умеет общаться и создавать картинки.\n"
-        "Просто напиши текст, чтобы поговорить со мной.\n"
-        "Или нажми на кнопку, чтобы перейти в режим генерации.",
-        reply_markup=get_main_keyboard()
+        "Привет! Я текстовый ассистент, а ещё умею рисовать по команде /image.\n"
+        "Просто напиши любое сообщение, и я отвечу.\n"
+        "А чтобы сгенерировать картинку, используй кнопку ниже или команду /image описание.",
+        reply_markup=get_keyboard()
     )
 
-# --- Обработчик команды /image для ручного ввода ---
+# --- Обработчик кнопки "Сгенерировать изображение" ---
+@bot.message_handler(func=lambda message: message.text == "🎨 Сгенерировать изображение")
+def image_button_handler(message):
+    bot.send_message(message.chat.id, "✏️ Напиши описание после команды /image, например:\n/image закат на Бали")
+
+# --- Команда /image (генерация картинки) ---
 @bot.message_handler(commands=['image'])
 def handle_image_command(message):
+    # Извлекаем описание из текста команды
     prompt = message.text.replace('/image', '', 1).strip()
     if not prompt:
-        bot.reply_to(message, "✏️ Напиши описание после команды, например: /image кот в космосе")
+        bot.reply_to(message, "✏️ Напиши описание после команды: /image кот в космосе")
         return
-    generate_and_send_image(message, prompt)
 
-# --- Обработчик нажатия на кнопку "Сгенерировать изображение" ---
-@bot.message_handler(func=lambda message: message.text == "🎨 Сгенерировать изображение")
-def handle_image_button(message):
-    bot.reply_to(message, "✏️ Напиши, что ты хочешь видеть на картинке.")
-
-# --- Общий обработчик для текста (и для команд, и для промптов) ---
-@bot.message_handler(func=lambda message: True)
-def handle_all_messages(message):
-    # Если это команда или нажатие на кнопку-триггер, пропускаем (они уже обработаны)
-    if message.text.startswith('/') or message.text == "🎨 Сгенерировать изображение":
-        return
-    
-    # Проверяем, является ли запрос промптом для генерации (недавний контекст)
-    # Для простоты: генерируем картинку, если пользователь написал что-то похожее
-    # Это базовый пример. При желании можно сделать умнее.
-    prompt = message.text
-    generate_and_send_image(message, prompt)
-
-# --- Общая функция для генерации и отправки картинки ---
-def generate_and_send_image(message, prompt):
-    waiting_msg = bot.reply_to(message, "🎨 Генерирую картинку, подожди немного...")
-    image_data = ask_openrouter_image(prompt)
-    if image_data:
-        bot.delete_message(message.chat.id, waiting_msg.message_id)
+    waiting = bot.reply_to(message, "🎨 Генерирую картинку, подожди...")
+    image_url = ask_openrouter_image(prompt)
+    if image_url:
+        bot.delete_message(message.chat.id, waiting.message_id)
         try:
-            # Пробуем отправить как фото
-            if image_data.startswith('data:image'):
-                # Это base64, отправляем как документ или фото
-                import base64
-                image_data = image_data.split(',')[1] if ',' in image_data else image_data
-                bot.send_photo(message.chat.id, base64.b64decode(image_data))
-            else:
-                # Это ссылка
-                bot.send_photo(message.chat.id, image_data)
-        except Exception as e:
-            logger.error(f"Ошибка отправки фото: {e}")
-            bot.send_message(message.chat.id, f"⚠️ Ссылка на картинку: {image_data}")
+            bot.send_photo(message.chat.id, image_url)
+        except Exception:
+            bot.send_message(message.chat.id, f"Ссылка на картинку: {image_url}")
     else:
         bot.edit_message_text(
-            "❌ Не удалось сгенерировать изображение. Возможно, модель временно недоступна или не хватает кредитов. Попробуй позже.",
-            message.chat.id, waiting_msg.message_id
+            "❌ Не удалось сгенерировать изображение. Возможно, модель перегружена или нужен платёж.",
+            message.chat.id, waiting.message_id
         )
 
-# --- Текстовый режим (обычный разговор) ---
+# --- Обработчик обычных текстовых сообщений (не команды) ---
 @bot.message_handler(func=lambda message: True)
 def handle_text(message):
+    # Игнорируем команды и текст кнопки
     if message.text.startswith('/') or message.text == "🎨 Сгенерировать изображение":
         return
     reply = ask_openrouter_text(message.text)
     bot.reply_to(message, reply)
 
-# --- Главный цикл с автоперезапуском ---
+# --- Запуск бота с автоперезапуском ---
 def run_bot():
     logger.info("✅ Бот запущен и слушает сообщения...")
     while True:
@@ -163,12 +134,11 @@ def run_bot():
             logger.error(f"❌ Ошибка: {e}. Перезапуск через 10 секунд...")
             time.sleep(10)
 
-# --- Заглушка для Render ---
+# --- Flask для Render ---
 @app.route('/')
 def index():
     return "Bot is running"
 
-# --- Точка входа ---
 if __name__ == "__main__":
     Thread(target=run_bot).start()
-    app.run(host='0.0.0.0', port=8080)                
+    app.run(host='0.0.0.0', port=8080)               
