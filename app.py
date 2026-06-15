@@ -103,7 +103,7 @@ def edit_image_with_openrouter(prompt, base64_image):
         {"type": "text", "text": prompt}
     ]
     payload = {
-        "model": "google/gemini-3.1-flash-image-preview",   # Для теста замените на sourceful/riverflow-v2.5-pro:free
+        "model": "google/gemini-2.5-flash-image-preview:free",   # Для теста замените на sourceful/riverflow-v2.5-pro:free
         "messages": [{"role": "user", "content": content}],
         "modalities": ["image", "text"]
     }
