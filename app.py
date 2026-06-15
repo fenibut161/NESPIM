@@ -3,42 +3,55 @@ import telebot
 import requests
 import time
 import uuid
+import base64
+import urllib3
 from flask import Flask
 from threading import Thread
 
-# --- Конфигурация ---
+# Отключаем предупреждения о небезопасных запросах (для тестов)
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# --- Конфигурация из переменных окружения Render ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+GIGACHAT_CLIENT_ID = os.getenv("GIGACHAT_CLIENT_ID")
 GIGACHAT_CLIENT_SECRET = os.getenv("GIGACHAT_CLIENT_SECRET")
+
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
 
-# --- Функция для получения токена доступа GigaChat ---
+# ========== ФУНКЦИЯ ПОЛУЧЕНИЯ ТОКЕНА GIGACHAT ==========
 def get_gigachat_token():
-    url = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
+    if not GIGACHAT_CLIENT_ID or not GIGACHAT_CLIENT_SECRET:
+        return None
+    credentials = f"{GIGACHAT_CLIENT_ID}:{GIGACHAT_CLIENT_SECRET}"
+    encoded_credentials = base64.b64encode(credentials.encode('utf-8')).decode('utf-8')
     headers = {
         "Content-Type": "application/x-www-form-urlencoded",
         "Accept": "application/json",
-        "RqUID": str(uuid.uuid4())
+        "RqUID": str(uuid.uuid4()),
+        "Authorization": f"Basic {encoded_credentials}"
     }
-    data = {
-        "client_id": "gigachat",
-        "client_secret": GIGACHAT_CLIENT_SECRET,
-        "scope": "GIGACHAT_API_PERS"
-    }
+    data = {"scope": "GIGACHAT_API_PERS"}
     try:
-        response = requests.post(url, headers=headers, data=data, verify=False)
+        response = requests.post(
+            "https://ngw.devices.sberbank.ru:9443/api/v2/oauth",
+            headers=headers,
+            data=data,
+            verify=False,
+            timeout=30
+        )
         if response.status_code == 200:
             return response.json().get("access_token")
         else:
             return None
-    except Exception as e:
+    except Exception:
         return None
 
-# --- Функция для генерации изображения через GigaChat (Kandinsky) ---
-def generate_gigachat_image(prompt):
+# ========== ФУНКЦИЯ ГЕНЕРАЦИИ ИЗОБРАЖЕНИЯ ЧЕРЕЗ GIGACHAT ==========
+def generate_gigachat_image(prompt: str) -> str | None:
     token = get_gigachat_token()
     if not token:
         return None
@@ -55,17 +68,18 @@ def generate_gigachat_image(prompt):
         "size": "1024x1024"
     }
     try:
-        response = requests.post(url, json=payload, headers=headers, verify=False)
+        response = requests.post(url, json=payload, headers=headers, verify=False, timeout=60)
         if response.status_code == 200:
             data = response.json()
-            return data.get("data", [{}])[0].get("url")
-        else:
-            return None
-    except Exception as e:
+            images = data.get("data", [])
+            if images:
+                return images[0].get("url")
+        return None
+    except Exception:
         return None
 
-# --- Функция для текстовых запросов (OpenRouter) ---
-def ask_openrouter_text(prompt):
+# ========== ТЕКСТОВЫЙ ОТВЕТ ЧЕРЕЗ OPENROUTER (DeepSeek и др.) ==========
+def ask_openrouter_text(prompt: str) -> str:
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json"
@@ -83,7 +97,7 @@ def ask_openrouter_text(prompt):
     except Exception as e:
         return f"⚠️ Ошибка соединения: {e}"
 
-# --- Обработчик команды /start ---
+# ========== ОБРАБОТЧИКИ КОМАНД ==========
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     bot.reply_to(
@@ -94,7 +108,6 @@ def send_welcome(message):
         "Пример: /image кот в космосе"
     )
 
-# --- Обработчик команды /image (генерация картинки) ---
 @bot.message_handler(commands=['image'])
 def handle_image_command(message):
     prompt = message.text.replace('/image', '', 1).strip()
@@ -107,18 +120,17 @@ def handle_image_command(message):
     if image_url:
         bot.send_photo(message.chat.id, image_url)
     else:
-        bot.send_message(message.chat.id, "❌ Не удалось сгенерировать изображение. Проверь API-ключ GigaChat.")
+        bot.send_message(message.chat.id, "❌ Не удалось сгенерировать изображение. Проверь переменные GIGACHAT_CLIENT_ID и GIGACHAT_CLIENT_SECRET в Render.")
 
-# --- Обработчик обычных текстовых сообщений (не команды) ---
+# ========== ОБРАБОТЧИК ТЕКСТОВЫХ СООБЩЕНИЙ (НЕ КОМАНД) ==========
 @bot.message_handler(func=lambda message: True)
 def handle_text(message):
-    # Игнорируем команды
     if message.text.startswith('/'):
         return
     reply = ask_openrouter_text(message.text)
     bot.reply_to(message, reply)
 
-# --- Запуск бота с автоперезапуском ---
+# ========== ЗАПУСК БОТА С АВТОПЕРЕЗАПУСКОМ ==========
 def run_bot():
     print("✅ Бот запущен и слушает сообщения...")
     while True:
@@ -128,7 +140,6 @@ def run_bot():
             print(f"❌ Ошибка: {e}. Перезапуск через 10 секунд...")
             time.sleep(10)
 
-# --- Заглушка для Render ---
 @app.route('/')
 def index():
     return "Bot is running"
