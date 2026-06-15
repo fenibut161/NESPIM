@@ -1,75 +1,3 @@
- --- Общий обработчик для текста (и для команд, и для промптов) ---
-@bot.message_handler(func=lambda message: True)
-def handle_all_messages(message):
-    # Если это команда или нажатие на кнопку-триггер, пропускаем (они уже обработаны)
-    if message.text.startswith('/') or message.text == "🎨 Сгенерировать изображение":
-        return
-    
-    # Проверяем, является ли запрос промптом для генерации (недавний контекст)
-    # Для простоты: генерируем картинку, если пользователь написал что-то похожее
-    # Это базовый пример. При желании можно сделать умнее.
-    prompt = message.text
-    generate_and_send_image(message, prompt)
-
-# --- Общая функция для генерации и отправки картинки ---
-def generate_and_send_image(message, prompt):
-    waiting_msg = bot.reply_to(message, "🎨 Генерирую картинку, подожди немного...")
-    image_data = ask_openrouter_image(prompt)
-    if image_data:
-        bot.delete_message(message.chat.id, waiting_msg.message_id)
-        try:
-            # Пробуем отправить как фото
-            if image_data.startswith('data:image'):
-                # Это base64, отправляем как документ или фото
-                import base64
-                image_data = image_data.split(',')[1] if ',' in image_data else image_data
-                bot.send_photo(message.chat.id, base64.b64decode(image_data))
-            else:
-                # Это ссылка
-                bot.send_photo(message.chat.id, image_data)
-        except Exception as e:
-            logger.error(f"Ошибка отправки фото: {e}")
-            bot.send_message(message.chat.id, f"⚠️ Ссылка на картинку: {image_data}")
-    else:
-        bot.edit_message_text(
-            "❌ Не удалось сгенерировать изображение. Возможно, модель временно недоступна или не хватает кредитов. Попробуй позже.",
-            message.chat.id, waiting_msg.message_id
-        )
-
-# --- Текстовый режим (обычный разговор) ---
-@bot.message_handler(func=lambda message: True)
-def handle_text(message):
-    if message.text.startswith('/') or message.text == "🎨 Сгенерировать изображение":
-        return
-    reply = ask_openrouter_text(message.text)
-    bot.reply_to(message, reply)
-
-# --- Главный цикл с автоперезапуском ---
-def run_bot():
-    logger.info("✅ Бот запущен и слушает сообщения...")
-    while True:
-        try:
-            bot.infinity_polling(timeout=60, long_polling_timeout=60)
-        except Exception as e:
-            logger.error(f"❌ Ошибка: {e}. Перезапуск через 10 секунд...")
-            time.sleep(10)
-
-# --- Заглушка для Render ---
-@app.route('/')
-def index():
-    return "Bot is running"
-
-# --- Точка входа ---
-if __name__ == "__main__":
-    Thread(target=run_bot).start()
-    app.run(host='0.0.0.0', port=8080) хочеш
-[2 ссылки]
-1. Redirecting...
-http://logger.info
-2. app.run - Данный веб-сайт выставлен на продажу! - app Ресурсы и информация.
-http://app.run
-
-Дэник Добрынян, сегодня в 12:33
 import os
 import telebot
 import requests
@@ -243,4 +171,4 @@ def index():
 # --- Точка входа ---
 if __name__ == "__main__":
     Thread(target=run_bot).start()
-    app.run(host='0.0.0.0', port=8080) 
+    app.run(host='0.0.0.0', port=8080)                
