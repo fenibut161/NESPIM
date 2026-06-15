@@ -44,7 +44,7 @@ def ask_openrouter_image(prompt):
         "Content-Type": "application/json"
     }
     payload = {
-        "model": "google/gemini-2.5-flash-image-preview",
+        "model": "openrouter/free",
         "messages": [{"role": "user", "content": prompt}],
         "modalities": ["image", "text"]
     }
