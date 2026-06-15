@@ -44,7 +44,7 @@ def ask_openrouter_image(prompt):
         "Content-Type": "application/json"
     }
     payload = {
-        "model": "openrouter/free",
+        "model": "sourceful/riverflow-v2.5-fast:free",
         "messages": [{"role": "user", "content": prompt}],
         "modalities": ["image", "text"]
     }
