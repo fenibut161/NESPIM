@@ -25,7 +25,7 @@ def ask_openrouter_text(prompt):
         "Content-Type": "application/json"
     }
     payload = {
-        "model": "openrouter/free",
+        "model": "microsoft/mai-image-2.5:free",
         "messages": [{"role": "user", "content": prompt}]
     }
     try:
