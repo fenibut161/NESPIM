@@ -121,7 +121,7 @@ def edit_image_with_openrouter(prompt, base64_image):
         {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
     ]
     payload = {
-        "model": "microsoft/mai-image-2.5",   # стабильная и недорогая модель
+        "model": "black-forest-labs/flux.2-pro",   # стабильная и недорогая модель
         "messages": [{"role": "user", "content": content}],
         "modalities": ["image", "text"]
     }
