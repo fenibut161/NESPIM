@@ -11,13 +11,13 @@ from flask import Flask
 from threading import Thread
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 
-# Отключаем предупреждения SSL для тестов (можно убрать в проде)
+# Отключаем предупреждения SSL для тестов
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# --- НАСТРОЙКИ ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ RENDER ---
+# --- ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ (Render) ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-GIGACHAT_AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY")   # Для генерации через Сбер
+GIGACHAT_AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY")   # для генерации через Сбер
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
@@ -25,7 +25,7 @@ bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
-# -------------------- 1. GIGACHAT (KANDINSKY) ДЛЯ ГЕНЕРАЦИИ ПО /image --------------------
+# ================== 1. GIGACHAT (KANDINSKY) ДЛЯ ГЕНЕРАЦИИ ПО /image ==================
 def get_gigachat_token():
     if not GIGACHAT_AUTH_KEY:
         return None
@@ -37,8 +37,10 @@ def get_gigachat_token():
     }
     data = {"scope": "GIGACHAT_API_PERS"}
     try:
-        response = requests.post("https://ngw.devices.sberbank.ru:9443/api/v2/oauth",
-                                 headers=headers, data=data, verify=False, timeout=30)
+        response = requests.post(
+            "https://ngw.devices.sberbank.ru:9443/api/v2/oauth",
+            headers=headers, data=data, verify=False, timeout=30
+        )
         if response.status_code == 200:
             return response.json().get("access_token")
         else:
@@ -62,11 +64,17 @@ def generate_gigachat_image(prompt):
     if not token:
         return None
     url = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json", "Accept": "application/json"}
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
     payload = {
         "model": "GigaChat",
-        "messages": [{"role": "system", "content": "Ты — художник, создающий изображения."},
-                     {"role": "user", "content": prompt}],
+        "messages": [
+            {"role": "system", "content": "Ты — художник, создающий изображения."},
+            {"role": "user", "content": prompt}
+        ],
         "function_call": "auto"
     }
     try:
@@ -82,10 +90,16 @@ def generate_gigachat_image(prompt):
     except Exception:
         return None
 
-# -------------------- 2. OPENROUTER ДЛЯ ТЕКСТА --------------------
+# ================== 2. OPENROUTER ДЛЯ ТЕКСТА ==================
 def ask_openrouter_text(prompt):
-    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
-    payload = {"model": "openrouter/free", "messages": [{"role": "user", "content": prompt}]}
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "openrouter/free",
+        "messages": [{"role": "user", "content": prompt}]
+    }
     try:
         response = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=30)
         if response.status_code == 200:
@@ -95,15 +109,19 @@ def ask_openrouter_text(prompt):
     except Exception as e:
         return f"⚠️ Ошибка соединения: {e}"
 
-# -------------------- 3. OPENROUTER ДЛЯ РЕДАКТИРОВАНИЯ ИЗОБРАЖЕНИЙ (NANO BANANA) --------------------
+# ================== 3. OPENROUTER ДЛЯ РЕДАКТИРОВАНИЯ ИЗОБРАЖЕНИЙ ==================
 def edit_image_with_openrouter(prompt, base64_image):
-    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    # Правильный порядок: сначала текст, потом изображение
     content = [
-        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}},
-        {"type": "text", "text": prompt}
+        {"type": "text", "text": prompt},
+        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
     ]
     payload = {
-        "model": "google/gemini-3.1-flash-image-preview",   # Для теста замените на sourceful/riverflow-v2.5-pro:free
+        "model": "microsoft/mai-image-2.5",   # стабильная и недорогая модель
         "messages": [{"role": "user", "content": content}],
         "modalities": ["image", "text"]
     }
@@ -111,18 +129,28 @@ def edit_image_with_openrouter(prompt, base64_image):
         response = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=60)
         if response.status_code == 200:
             data = response.json()
-            images = data.get('choices', [{}])[0].get('message', {}).get('images', [])
-            if images:
-                image_url = images[0].get('image_url', {}).get('url')
-                if image_url:
-                    img_response = requests.get(image_url)
-                    return img_response.content
-        return None
+            # Универсальный парсинг: ищем images в message
+            if data.get('choices') and len(data['choices']) > 0:
+                msg = data['choices'][0].get('message', {})
+                images = msg.get('images', [])
+                if images and len(images) > 0:
+                    img_info = images[0]
+                    img_url = img_info.get('image_url', {}).get('url')
+                    if img_url:
+                        img_response = requests.get(img_url)
+                        return img_response.content
+                else:
+                    # Для отладки: выводим текст ответа, если изображений нет
+                    print(f"DEBUG: no images in response, text: {msg.get('content', '')[:200]}")
+            return None
+        else:
+            print(f"OpenRouter error: {response.status_code} - {response.text}")
+            return None
     except Exception as e:
-        logging.error(f"OpenRouter edit error: {e}")
+        print(f"Exception in edit_image_with_openrouter: {e}")
         return None
 
-# -------------------- 4. ОБРАБОТЧИКИ КОМАНД ТЕЛЕГРАМ --------------------
+# ================== 4. ОБРАБОТЧИКИ КОМАНД ТЕЛЕГРАМ ==================
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
@@ -155,29 +183,28 @@ def handle_image_command(message):
         bot.delete_message(message.chat.id, waiting.message_id)
         bot.send_photo(message.chat.id, img_data, caption="✅ Вот что получилось:")
     else:
-        bot.edit_message_text("❌ Не удалось сгенерировать изображение. Проверь GIGACHAT_AUTH_KEY или попробуй позже.",
-                              message.chat.id, waiting.message_id)
+        bot.edit_message_text(
+            "❌ Не удалось сгенерировать изображение. Проверь GIGACHAT_AUTH_KEY или попробуй позже.",
+            message.chat.id, waiting.message_id
+        )
 
-# --- Обработчик редактирования фото (отправлено фото + текст в caption) ---
 @bot.message_handler(content_types=['photo'])
 def handle_photo_edit(message):
-    # Получаем текст запроса из подписи к фото
-    prompt = message.caption or "Отредактируй это изображение, сохранив общий смысл, но улучши качество и стиль"
+    prompt = message.caption or "Отредактируй это изображение, улучши качество и стиль"
     waiting = bot.reply_to(message, "🎨 Редактирую изображение по твоему запросу, подожди...")
-    # Скачиваем фото
     file_info = bot.get_file(message.photo[-1].file_id)
     downloaded_file = bot.download_file(file_info.file_path)
-    # Конвертируем в base64
     base64_image = base64.b64encode(downloaded_file).decode('utf-8')
-    # Отправляем запрос к OpenRouter
     result_image = edit_image_with_openrouter(prompt, base64_image)
     bot.delete_message(message.chat.id, waiting.message_id)
     if result_image:
         bot.send_photo(message.chat.id, result_image, caption="✅ Отредактированное изображение:")
     else:
-        bot.send_message(message.chat.id, "❌ Не удалось обработать изображение. Попробуй другой запрос или модель.")
+        bot.send_message(
+            message.chat.id,
+            "❌ Не удалось обработать изображение. Попробуй другой запрос или модель."
+        )
 
-# --- Обработчик обычных текстовых сообщений (не команды) ---
 @bot.message_handler(func=lambda message: True)
 def handle_text(message):
     if message.text.startswith('/') or message.text == "🎨 Сгенерировать изображение":
@@ -185,10 +212,10 @@ def handle_text(message):
     reply = ask_openrouter_text(message.text)
     bot.reply_to(message, reply)
 
-# -------------------- 5. ЗАПУСК БОТА С АВТОПЕРЕЗАПУСКОМ --------------------
+# ================== 5. ЗАПУСК БОТА С АВТОПЕРЕЗАПУСКОМ ==================
 def run_bot():
     logging.info("✅ Бот запущен и слушает сообщения...")
-    # Удаляем вебхук на случай конфликта
+    # Удаляем вебхук, чтобы избежать конфликта
     try:
         bot.remove_webhook()
         time.sleep(1)
