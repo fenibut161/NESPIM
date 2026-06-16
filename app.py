@@ -132,13 +132,13 @@ def ask_openrouter_text(prompt):
 # ================== 3. OPENROUTER ДЛЯ РЕДАКТИРОВАНИЯ ИЗОБРАЖЕНИЙ ==================
 def edit_image_img2img(prompt, image_base64):
     """
-    Редактирование изображения (img2img) через OpenRouter,
-    используя google/gemini-2.5-flash-image.
+    Редактирование изображения (img2img) через Google Gemini Flash Image.
+    Модель возвращает готовое изображение прямо в base64 или как временный URL.
     """
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://t.me/YOUR_BOT_USERNAME",  # замени на свой юзернейм бота
+        "HTTP-Referer": "https://t.me/YOUR_BOT_USERNAME",   # замени на свой
         "X-Title": "TelegramBot"
     }
     payload = {
@@ -157,25 +157,37 @@ def edit_image_img2img(prompt, image_base64):
 
     try:
         logging.info("Отправляю img2img запрос с Gemini Flash Image...")
-        resp = requests.post(
-            OPENROUTER_URL,          # тот же /api/v1/chat/completions
-            json=payload,
-            headers=headers,
-            timeout=120
-        )
+        resp = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
         logging.info(f"Статус ответа: {resp.status_code}")
         if resp.status_code == 200:
             data = resp.json()
-            logging.info(f"Ответ: {json.dumps(data, ensure_ascii=False)[:300]}")
+            logging.info(f"Ответ (первые 500 символов): {json.dumps(data, ensure_ascii=False)[:500]}")
             if "choices" in data and len(data["choices"]) > 0:
                 msg = data["choices"][0].get("message", {})
+                # Ищем изображение в поле images (как обычно)
                 if "images" in msg and len(msg["images"]) > 0:
                     img_url = msg["images"][0]["image_url"]["url"]
-                    img_data = requests.get(img_url).content
-                    logging.info("Изображение успешно получено.")
+                else:
+                    # Иногда Gemini возвращает изображение прямо в content (base64) как строку
+                    content = msg.get("content", "")
+                    if content.startswith("data:image/png;base64,"):
+                        img_url = content
+                    else:
+                        logging.error("Нет ни images, ни base64 в content")
+                        return None
+
+                # Обрабатываем img_url: если это data-URI – декодируем, иначе скачиваем
+                if img_url.startswith("data:image/"):
+                    # Формат: data:image/png;base64,xxxx
+                    base64_part = img_url.split(",", 1)[1]
+                    img_data = base64.b64decode(base64_part)
+                    logging.info("Изображение получено из base64 (data URI).")
                     return img_data
                 else:
-                    logging.error("В ответе нет поля 'images'.")
+                    # Это обычный URL – скачиваем
+                    img_data = requests.get(img_url).content
+                    logging.info("Изображение скачано по URL.")
+                    return img_data
             else:
                 logging.error("Пустой ответ API.")
         else:
