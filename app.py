@@ -235,6 +235,7 @@ def handle_image_command(message):
         )
 
 @bot.message_handler(content_types=['photo'])
+@bot.message_handler(content_types=['photo'])
 def handle_photo_edit(message):
     prompt = message.caption or "Отредактируй это изображение, улучши качество и стиль"
     waiting = bot.reply_to(message, "🎨 Редактирую изображение...")
@@ -244,7 +245,7 @@ def handle_photo_edit(message):
     downloaded_file = bot.download_file(file_info.file_path)
     base64_image = base64.b64encode(downloaded_file).decode('utf-8')
 
-    # Используем новую функцию img2img
+    # Получаем отредактированное изображение
     result_image = edit_image_img2img(prompt, base64_image)
 
     try:
@@ -253,7 +254,35 @@ def handle_photo_edit(message):
         pass
 
     if result_image:
-        bot.send_photo(message.chat.id, result_image, caption="✅ Отредактированное изображение:")
+        logging.info(f"Размер result_image: {len(result_image)} байт")
+
+        # Сжимаем до безопасного JPEG
+        try:
+            img = Image.open(io.BytesIO(result_image))
+            # Принудительно уменьшаем до 800×800
+            img.thumbnail((800, 800), Image.LANCZOS)
+            img = img.convert("RGB")  # убираем прозрачность
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=85, optimize=True)
+            compressed = buf.getvalue()
+            logging.info(f"Размер после сжатия: {len(compressed)} байт")
+        except Exception as e:
+            logging.error(f"Ошибка сжатия: {e}")
+            compressed = result_image  # fallback
+
+        # Пытаемся отправить как фото
+        try:
+            bot.send_photo(message.chat.id, compressed, caption="✅ Отредактированное изображение:")
+            logging.info("Фото отправлено успешно.")
+        except Exception as e:
+            logging.error(f"Ошибка отправки фото: {e}")
+            # fallback: отправляем как документ (исходный файл)
+            try:
+                bot.send_document(message.chat.id, result_image, caption="✅ Результат (документ)")
+                logging.info("Отправлено как документ.")
+            except Exception as e2:
+                logging.error(f"Не удалось отправить даже документ: {e2}")
+                bot.send_message(message.chat.id, "❌ Не удалось отправить изображение.")
     else:
         bot.send_message(
             message.chat.id,
