@@ -97,7 +97,7 @@ def ask_openrouter_text(prompt):
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://t.me/YOUR_BOT_USERNAME",   # замени на юзернейм бота или оставь пустым
+        "HTTP-Referer": "https://t.me/Jastick_bot",   # замени на юзернейм бота или оставь пустым
         "X-Title": "TelegramBot"
     }
     payload = {
@@ -139,11 +139,11 @@ def edit_image_img2img(prompt, image_base64):
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://t.me/YOUR_BOT_USERNAME",   # замени на свой
+        "HTTP-Referer": "https://t.me/Jastick_bot",   # замени на свой
         "X-Title": "TelegramBot"
     }
     payload = {
-        "model": "bytedance-seed/seedream-4.5",
+        "model": "x-ai/grok-imagine-image-quality",
         "messages": [
             {
                 "role": "user",
