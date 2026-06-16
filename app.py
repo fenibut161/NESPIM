@@ -11,6 +11,8 @@ import logging
 from flask import Flask
 from threading import Thread
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton
+from PIL import Image
+import io
 
 # Отключаем предупреждения SSL для тестов
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -97,7 +99,7 @@ def ask_openrouter_text(prompt):
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://t.me/Jastick_bot",   # замени на юзернейм бота или оставь пустым
+        "HTTP-Referer": "https://t.me/Jastick_bot",
         "X-Title": "TelegramBot"
     }
     payload = {
@@ -111,14 +113,13 @@ def ask_openrouter_text(prompt):
             OPENROUTER_URL,
             json=payload,
             headers=headers,
-            timeout=90                        # увеличенный таймаут для медленных моделей
+            timeout=90
         )
         logging.info(f"OpenRouter response status: {response.status_code}")
 
         if response.status_code == 200:
             data = response.json()
-            logging.info(f"Response data: {json.dumps(data, ensure_ascii=False)[:200]}...")  # первые 200 символов
-            # Иногда ответ может быть в другом поле (например, при reasoning)
+            logging.info(f"Response data: {json.dumps(data, ensure_ascii=False)[:200]}...")
             if "choices" in data and len(data["choices"]) > 0:
                 return data["choices"][0]["message"]["content"]
             else:
@@ -130,20 +131,20 @@ def ask_openrouter_text(prompt):
         logging.error(f"Exception in ask_openrouter_text: {e}")
         return f"⚠️ Ошибка соединения: {e}"
 
-# ================== 3. OPENROUTER ДЛЯ РЕДАКТИРОВАНИЯ ИЗОБРАЖЕНИЙ ==================
+# ================== 3. OPENROUTER ДЛЯ РЕДАКТИРОВАНИЯ ИЗОБРАЖЕНИЙ (img2img) ==================
 def edit_image_img2img(prompt, image_base64):
     """
-    Редактирование изображения (img2img) через Google Gemini Flash Image.
-    Модель возвращает готовое изображение прямо в base64 или как временный URL.
+    Редактирование изображения (img2img) через Google Gemini 3 Pro Image Preview.
+    Возвращает готовое изображение (байты) или None при ошибке.
     """
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://t.me/Jastick_bot",   # замени на свой
+        "HTTP-Referer": "https://t.me/Jastick_bot",
         "X-Title": "TelegramBot"
     }
     payload = {
-        "model": "x-ai/grok-imagine-image-quality",
+        "model": "google/gemini-3-pro-image-preview",
         "messages": [
             {
                 "role": "user",
@@ -157,7 +158,7 @@ def edit_image_img2img(prompt, image_base64):
     }
 
     try:
-        logging.info("Отправляю img2img запрос с Gemini Flash Image...")
+        logging.info("Отправляю img2img запрос с Gemini 3 Pro Image...")
         resp = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
         logging.info(f"Статус ответа: {resp.status_code}")
         if resp.status_code == 200:
@@ -165,11 +166,11 @@ def edit_image_img2img(prompt, image_base64):
             logging.info(f"Ответ (первые 500 символов): {json.dumps(data, ensure_ascii=False)[:500]}")
             if "choices" in data and len(data["choices"]) > 0:
                 msg = data["choices"][0].get("message", {})
-                # Ищем изображение в поле images (как обычно)
+                # Ищем изображение в поле images
                 if "images" in msg and len(msg["images"]) > 0:
                     img_url = msg["images"][0]["image_url"]["url"]
                 else:
-                    # Иногда Gemini возвращает изображение прямо в content (base64) как строку
+                    # Иногда Gemini возвращает изображение прямо в content как data URI
                     content = msg.get("content", "")
                     if content.startswith("data:image/png;base64,"):
                         img_url = content
@@ -177,15 +178,13 @@ def edit_image_img2img(prompt, image_base64):
                         logging.error("Нет ни images, ни base64 в content")
                         return None
 
-                # Обрабатываем img_url: если это data-URI – декодируем, иначе скачиваем
+                # Обрабатываем img_url: если data URI – декодируем, иначе скачиваем
                 if img_url.startswith("data:image/"):
-                    # Формат: data:image/png;base64,xxxx
                     base64_part = img_url.split(",", 1)[1]
                     img_data = base64.b64decode(base64_part)
                     logging.info("Изображение получено из base64 (data URI).")
                     return img_data
                 else:
-                    # Это обычный URL – скачиваем
                     img_data = requests.get(img_url).content
                     logging.info("Изображение скачано по URL.")
                     return img_data
@@ -197,6 +196,7 @@ def edit_image_img2img(prompt, image_base64):
     except Exception as e:
         logging.error(f"Исключение при img2img: {e}")
         return None
+
 # ================== 4. ОБРАБОТЧИКИ КОМАНД ТЕЛЕГРАМ ==================
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
@@ -236,7 +236,6 @@ def handle_image_command(message):
         )
 
 @bot.message_handler(content_types=['photo'])
-@bot.message_handler(content_types=['photo'])
 def handle_photo_edit(message):
     prompt = message.caption or "Отредактируй это изображение, улучши качество и стиль"
     waiting = bot.reply_to(message, "🎨 Редактирую изображение...")
@@ -260,9 +259,8 @@ def handle_photo_edit(message):
         # Сжимаем до безопасного JPEG
         try:
             img = Image.open(io.BytesIO(result_image))
-            # Принудительно уменьшаем до 800×800
-            img.thumbnail((800, 800), Image.LANCZOS)
-            img = img.convert("RGB")  # убираем прозрачность
+            img.thumbnail((800, 800), Image.LANCZOS)        # уменьшаем до 800×800
+            img = img.convert("RGB")                        # убираем прозрачность
             buf = io.BytesIO()
             img.save(buf, format="JPEG", quality=85, optimize=True)
             compressed = buf.getvalue()
@@ -277,7 +275,7 @@ def handle_photo_edit(message):
             logging.info("Фото отправлено успешно.")
         except Exception as e:
             logging.error(f"Ошибка отправки фото: {e}")
-            # fallback: отправляем как документ (исходный файл)
+            # fallback: отправляем как документ
             try:
                 bot.send_document(message.chat.id, result_image, caption="✅ Результат (документ)")
                 logging.info("Отправлено как документ.")
@@ -300,7 +298,6 @@ def handle_text(message):
 # ================== 5. ЗАПУСК БОТА С АВТОПЕРЕЗАПУСКОМ ==================
 def run_bot():
     logging.info("✅ Бот запущен и слушает сообщения...")
-    # Удаляем вебхук, чтобы избежать конфликта
     try:
         bot.remove_webhook()
         time.sleep(1)
