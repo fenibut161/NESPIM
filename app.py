@@ -97,7 +97,7 @@ def ask_openrouter_text(prompt):
         "Content-Type": "application/json"
     }
     payload = {
-        "model": "openrouter/free",
+        "model": "deepseek/deepseek-chat-v3-0324:free",
         "messages": [{"role": "user", "content": prompt}]
     }
     try:
