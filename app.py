@@ -132,9 +132,8 @@ def ask_openrouter_text(prompt):
 # ================== 3. OPENROUTER ДЛЯ РЕДАКТИРОВАНИЯ ИЗОБРАЖЕНИЙ ==================
 def edit_image_img2img(prompt, image_base64):
     """
-    Редактирует изображение (img2img) через OpenRouter, используя
-    платную модель stabilityai/stable-diffusion-3.5-large.
-    Возвращает байты готового изображения или None при ошибке.
+    Редактирование изображения (img2img) через OpenRouter Images API.
+    Платная модель stabilityai/stable-diffusion-3.5-large.
     """
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
@@ -142,48 +141,42 @@ def edit_image_img2img(prompt, image_base64):
     }
     payload = {
         "model": "stabilityai/stable-diffusion-3.5-large",
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
-                ]
-            }
-        ],
-        "modalities": ["image", "text"],  # обязательно для img2img
-        "strength": 0.75                  # степень изменения: 0.0 – без изменений, 1.0 – полностью перерисовать
+        "prompt": prompt,
+        "image": f"data:image/jpeg;base64,{image_base64}",
+        "strength": 0.75,          # степень изменения
+        "n": 1,
+        "size": "1024x1024",       # подбери под свой случай, можно dynamic
+        "output_format": "jpeg"
     }
 
     try:
-        logging.info("Отправляю запрос img2img в OpenRouter (Stable Diffusion 3.5)...")
+        logging.info("Отправляю img2img запрос в OpenRouter Images API...")
         resp = requests.post(
-            OPENROUTER_URL,
+            "https://openrouter.ai/api/v1/images/generations",
             json=payload,
             headers=headers,
-            timeout=120          # генерация может занимать до двух минут
+            timeout=120
         )
-
+        logging.info(f"Статус ответа: {resp.status_code}")
         if resp.status_code == 200:
             data = resp.json()
-            # Проверяем структуру ответа
-            if "choices" in data and len(data["choices"]) > 0:
-                msg = data["choices"][0].get("message", {})
-                # Изображение обычно приходит в массиве images
-                if "images" in msg and len(msg["images"]) > 0:
-                    img_url = msg["images"][0]["image_url"]["url"]
-                    # Скачиваем само изображение по временному URL
-                    img_data = requests.get(img_url).content
-                    logging.info("Изображение успешно получено и скачано.")
+            # Ответ содержит data[0].b64_json или url
+            if "data" in data and len(data["data"]) > 0:
+                img_info = data["data"][0]
+                if "b64_json" in img_info:
+                    # Картинка прямо в base64 – сразу отдаём
+                    return base64.b64decode(img_info["b64_json"])
+                elif "url" in img_info:
+                    # Скачиваем по URL
+                    img_data = requests.get(img_info["url"]).content
                     return img_data
                 else:
-                    logging.error("В ответе нет поля 'images'. Возможно, модель не поддерживает img2img.")
+                    logging.error("Нет ни b64_json, ни url в ответе")
             else:
-                logging.error("Пустой ответ от API.")
+                logging.error("Пустой data в ответе")
         else:
             logging.error(f"Ошибка API: {resp.status_code} – {resp.text[:300]}")
         return None
-
     except Exception as e:
         logging.error(f"Исключение при img2img: {e}")
         return None
