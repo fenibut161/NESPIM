@@ -97,7 +97,7 @@ def ask_openrouter_text(prompt):
         "Content-Type": "application/json"
     }
     payload = {
-        "model": "deepseek/deepseek-r1:free",
+        "model": "meta-llama/llama-3-8b-instruct:free",
         "messages": [{"role": "user", "content": prompt}]
     }
     try:
