@@ -22,7 +22,8 @@ GIGACHAT_AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY")   # для генерации
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
-bot = telebot.TeleBot(TELEGRAM_TOKEN)
+bot = telebot.TeleBot(TELEGRAM_TOKEN, threaded=False, num_workers=1)
+bot.request_timeout = 120
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
