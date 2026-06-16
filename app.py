@@ -103,7 +103,7 @@ def ask_openrouter_text(prompt):
         "X-Title": "TelegramBot"
     }
     payload = {
-        "model": "openrouter/free",          # авто-выбор бесплатной модели
+        "model": "meta-llama/llama-3.3-70b-instruct:free",          # авто-выбор бесплатной модели
         "messages": [{"role": "user", "content": prompt}]
     }
 
