@@ -6,6 +6,7 @@ import uuid
 import re
 import base64
 import urllib3
+import json
 import logging
 from flask import Flask
 from threading import Thread
@@ -94,19 +95,38 @@ def generate_gigachat_image(prompt):
 def ask_openrouter_text(prompt):
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://t.me/YOUR_BOT_USERNAME",   # замени на юзернейм бота или оставь пустым
+        "X-Title": "TelegramBot"
     }
     payload = {
-        "model": "google/gemma-2-9b-it:free",
+        "model": "openrouter/free",          # авто-выбор бесплатной модели
         "messages": [{"role": "user", "content": prompt}]
     }
+
     try:
-        response = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=30)
+        logging.info(f"Sending request to OpenRouter with model {payload['model']}")
+        response = requests.post(
+            OPENROUTER_URL,
+            json=payload,
+            headers=headers,
+            timeout=90                        # увеличенный таймаут для медленных моделей
+        )
+        logging.info(f"OpenRouter response status: {response.status_code}")
+
         if response.status_code == 200:
-            return response.json()["choices"][0]["message"]["content"]
+            data = response.json()
+            logging.info(f"Response data: {json.dumps(data, ensure_ascii=False)[:200]}...")  # первые 200 символов
+            # Иногда ответ может быть в другом поле (например, при reasoning)
+            if "choices" in data and len(data["choices"]) > 0:
+                return data["choices"][0]["message"]["content"]
+            else:
+                return "⚠️ Модель вернула пустой ответ"
         else:
+            logging.error(f"OpenRouter error: {response.status_code} - {response.text}")
             return f"❌ Ошибка API: {response.status_code}"
     except Exception as e:
+        logging.error(f"Exception in ask_openrouter_text: {e}")
         return f"⚠️ Ошибка соединения: {e}"
 
 # ================== 3. OPENROUTER ДЛЯ РЕДАКТИРОВАНИЯ ИЗОБРАЖЕНИЙ ==================
