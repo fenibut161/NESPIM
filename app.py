@@ -130,46 +130,63 @@ def ask_openrouter_text(prompt):
         return f"⚠️ Ошибка соединения: {e}"
 
 # ================== 3. OPENROUTER ДЛЯ РЕДАКТИРОВАНИЯ ИЗОБРАЖЕНИЙ ==================
-def edit_image_with_openrouter(prompt, base64_image):
+def edit_image_img2img(prompt, image_base64):
+    """
+    Редактирует изображение (img2img) через OpenRouter, используя
+    платную модель stabilityai/stable-diffusion-3.5-large.
+    Возвращает байты готового изображения или None при ошибке.
+    """
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json"
     }
-    # Правильный порядок: сначала текст, потом изображение
-    content = [
-        {"type": "text", "text": prompt},
-        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-    ]
     payload = {
-        "model": "black-forest-labs/flux.2-pro",   # стабильная и недорогая модель
-        "messages": [{"role": "user", "content": content}],
-        "modalities": ["image", "text"]
+        "model": "stabilityai/stable-diffusion-3.5-large",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
+                ]
+            }
+        ],
+        "modalities": ["image", "text"],  # обязательно для img2img
+        "strength": 0.75                  # степень изменения: 0.0 – без изменений, 1.0 – полностью перерисовать
     }
+
     try:
-        response = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=60)
-        if response.status_code == 200:
-            data = response.json()
-            # Универсальный парсинг: ищем images в message
-            if data.get('choices') and len(data['choices']) > 0:
-                msg = data['choices'][0].get('message', {})
-                images = msg.get('images', [])
-                if images and len(images) > 0:
-                    img_info = images[0]
-                    img_url = img_info.get('image_url', {}).get('url')
-                    if img_url:
-                        img_response = requests.get(img_url)
-                        return img_response.content
+        logging.info("Отправляю запрос img2img в OpenRouter (Stable Diffusion 3.5)...")
+        resp = requests.post(
+            OPENROUTER_URL,
+            json=payload,
+            headers=headers,
+            timeout=120          # генерация может занимать до двух минут
+        )
+
+        if resp.status_code == 200:
+            data = resp.json()
+            # Проверяем структуру ответа
+            if "choices" in data and len(data["choices"]) > 0:
+                msg = data["choices"][0].get("message", {})
+                # Изображение обычно приходит в массиве images
+                if "images" in msg and len(msg["images"]) > 0:
+                    img_url = msg["images"][0]["image_url"]["url"]
+                    # Скачиваем само изображение по временному URL
+                    img_data = requests.get(img_url).content
+                    logging.info("Изображение успешно получено и скачано.")
+                    return img_data
                 else:
-                    # Для отладки: выводим текст ответа, если изображений нет
-                    print(f"DEBUG: no images in response, text: {msg.get('content', '')[:200]}")
-            return None
+                    logging.error("В ответе нет поля 'images'. Возможно, модель не поддерживает img2img.")
+            else:
+                logging.error("Пустой ответ от API.")
         else:
-            print(f"OpenRouter error: {response.status_code} - {response.text}")
-            return None
-    except Exception as e:
-        print(f"Exception in edit_image_with_openrouter: {e}")
+            logging.error(f"Ошибка API: {resp.status_code} – {resp.text[:300]}")
         return None
 
+    except Exception as e:
+        logging.error(f"Исключение при img2img: {e}")
+        return None
 # ================== 4. ОБРАБОТЧИКИ КОМАНД ТЕЛЕГРАМ ==================
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
@@ -209,20 +226,30 @@ def handle_image_command(message):
         )
 
 @bot.message_handler(content_types=['photo'])
+@bot.message_handler(content_types=['photo'])
 def handle_photo_edit(message):
     prompt = message.caption or "Отредактируй это изображение, улучши качество и стиль"
-    waiting = bot.reply_to(message, "🎨 Редактирую изображение по твоему запросу, подожди...")
+    waiting = bot.reply_to(message, "🎨 Редактирую изображение...")
+
+    # Скачиваем фото
     file_info = bot.get_file(message.photo[-1].file_id)
     downloaded_file = bot.download_file(file_info.file_path)
     base64_image = base64.b64encode(downloaded_file).decode('utf-8')
-    result_image = edit_image_with_openrouter(prompt, base64_image)
-    bot.delete_message(message.chat.id, waiting.message_id)
+
+    # Используем новую функцию img2img
+    result_image = edit_image_img2img(prompt, base64_image)
+
+    try:
+        bot.delete_message(message.chat.id, waiting.message_id)
+    except:
+        pass
+
     if result_image:
         bot.send_photo(message.chat.id, result_image, caption="✅ Отредактированное изображение:")
     else:
         bot.send_message(
             message.chat.id,
-            "❌ Не удалось обработать изображение. Попробуй другой запрос или модель."
+            "❌ Не удалось обработать изображение. Попробуй другой запрос или позже."
         )
 
 @bot.message_handler(func=lambda message: True)
