@@ -132,17 +132,17 @@ def ask_openrouter_text(prompt):
 # ================== 3. OPENROUTER ДЛЯ РЕДАКТИРОВАНИЯ ИЗОБРАЖЕНИЙ ==================
 def edit_image_img2img(prompt, image_base64):
     """
-    Редактирование изображения (img2img) через OpenRouter Chat Completions.
-    Модель stabilityai/stable-diffusion-3.5-large (платная, ~$0.002/запрос).
+    Редактирование изображения (img2img) через OpenRouter,
+    используя google/gemini-2.5-flash-image.
     """
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://t.me/YOUR_BOT_USERNAME",  # замени на юзернейм бота или оставь пустым
+        "HTTP-Referer": "https://t.me/YOUR_BOT_USERNAME",  # замени на свой юзернейм бота
         "X-Title": "TelegramBot"
     }
     payload = {
-        "model": "stabilityai/stable-diffusion-3.5-large",
+        "model": "google/gemini-2.5-flash-image",
         "messages": [
             {
                 "role": "user",
@@ -153,13 +153,12 @@ def edit_image_img2img(prompt, image_base64):
             }
         ],
         "modalities": ["image", "text"]   # обязательно
-        # strength убран – модель сама выберет степень изменения
     }
 
     try:
-        logging.info("Отправляю img2img запрос в OpenRouter (chat completions)...")
+        logging.info("Отправляю img2img запрос с Gemini Flash Image...")
         resp = requests.post(
-            OPENROUTER_URL,          # тот же URL для чата
+            OPENROUTER_URL,          # тот же /api/v1/chat/completions
             json=payload,
             headers=headers,
             timeout=120
@@ -176,7 +175,7 @@ def edit_image_img2img(prompt, image_base64):
                     logging.info("Изображение успешно получено.")
                     return img_data
                 else:
-                    logging.error("В ответе нет поля 'images'. Возможно, модель не поддерживает img2img или ошибка.")
+                    logging.error("В ответе нет поля 'images'.")
             else:
                 logging.error("Пустой ответ API.")
         else:
