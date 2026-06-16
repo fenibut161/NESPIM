@@ -143,7 +143,7 @@ def edit_image_img2img(prompt, image_base64):
         "X-Title": "TelegramBot"
     }
     payload = {
-        "model": "google/gemini-2.5-flash-image",
+        "model": "bytedance-seed/seedream-4.5",
         "messages": [
             {
                 "role": "user",
