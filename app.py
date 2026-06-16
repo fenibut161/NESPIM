@@ -97,7 +97,7 @@ def ask_openrouter_text(prompt):
         "Content-Type": "application/json"
     }
     payload = {
-        "model": "meta-llama/llama-3-8b-instruct:free",
+        "model": "google/gemma-2-9b-it:free",
         "messages": [{"role": "user", "content": prompt}]
     }
     try:
