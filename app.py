@@ -224,7 +224,6 @@ def handle_image_command(message):
         )
 
 @bot.message_handler(content_types=['photo'])
-@bot.message_handler(content_types=['photo'])
 def handle_photo_edit(message):
     prompt = message.caption or "Отредактируй это изображение, улучши качество и стиль"
     waiting = bot.reply_to(message, "🎨 Редактирую изображение...")
