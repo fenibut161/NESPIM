@@ -287,7 +287,7 @@ def menu_edit_photo(message):
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("💎 Nano Banana Pro", callback_data="edit_pro"),
-        InlineKeyboardButton("⚡ Gemini Flash (дёшево)", callback_data="edit_flash")
+        InlineKeyboardButton("⚡ Gemini Flash 3.1 (баланс)", callback_data="edit_flash")
     )
     bot.send_message(message.chat.id, "Выбери модель редактирования:", reply_markup=markup)
 
