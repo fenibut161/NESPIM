@@ -32,6 +32,7 @@ logging.basicConfig(level=logging.INFO)
 # Словари состояний
 user_state = {}
 user_edit_model = {}     # 'pro' или 'flash'
+user_face_mode = {}      # 'keep_face' или 'full_edit'
 user_generate_model = {} # 'gigachat' или 'nanobanana'
 user_pending_photo = {}
 
@@ -149,95 +150,61 @@ def ask_openrouter_text(prompt):
 
 # ================== 3. РЕДАКТИРОВАНИЕ ИЗОБРАЖЕНИЙ ==================
 def edit_image_pro(prompt, image_base64):
-    """
-    Редактирование через Google Gemini 3 Pro Image Preview.
-    При длинных промтах автоматически ужесточает инструкцию, чтобы получить именно картинку.
-    Возвращает (image_bytes, text_response) – одно из значений может быть None.
-    """
+    """Редактирование через Google Gemini 3 Pro Image Preview с авто‑сокращением промта."""
+    short_prompt = prompt.split('.')[0].strip()
+    if len(short_prompt) > 300:
+        short_prompt = short_prompt[:300] + "..."
+    logging.info(f"PRO: исходный промт длиной {len(prompt)} символов, используется: {short_prompt}")
+
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
         "HTTP-Referer": "https://t.me/Jastick_bot",
         "X-Title": "TelegramBot"
     }
-
-    # Первая попытка: обычный системный промт
-    payload1 = {
+    payload = {
         "model": "google/gemini-3-pro-image-preview",
         "messages": [
             {
                 "role": "system",
-                "content": (
-                    "Ты — ассистент по редактированию изображений. "
-                    "Пользователь пришлёт изображение и описание правок. "
-                    "Твоя задача — отредактировать изображение в соответствии с описанием и вернуть **только** отредактированное изображение. "
-                    "Не пиши никаких пояснений, описаний или комментариев. "
-                    "Твой ответ должен содержать исключительно изображение."
-                )
+                "content": "Ты — редактор изображений. Отредактируй прикреплённое изображение по описанию пользователя и верни только готовое изображение. Не добавляй текст."
             },
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": prompt},
+                    {"type": "text", "text": short_prompt},
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
                 ]
             }
         ],
-        "modalities": ["image", "text"],
-        "max_tokens": 4096
+        "modalities": ["image", "text"]
     }
-
-    for attempt in range(2):
-        try:
-            logging.info(f"Pro (попытка {attempt+1}): отправка запроса...")
-            resp = requests.post(OPENROUTER_URL, json=payload1, headers=headers, timeout=120)
-            if resp.status_code == 200:
-                data = resp.json()
-                msg = data["choices"][0]["message"]
-                logging.info(f"Pro: ответ получен. Содержимое: {json.dumps(msg, ensure_ascii=False)[:300]}")
-                # Ищем изображение
-                if "images" in msg and msg["images"]:
-                    img_url = msg["images"][0]["image_url"]["url"]
-                elif msg.get("content", "").startswith("data:image/"):
-                    img_url = msg["content"]
-                else:
-                    # Изображения нет — возможно текстовый ответ
-                    text = msg.get("content", "").strip()
-                    if text:
-                        logging.warning(f"Pro (попытка {attempt+1}): получен текст, а не изображение. Текст: {text[:200]}...")
-                        if attempt == 0:
-                            # Повторяем с более жёстким системным промтом
-                            payload1["messages"][0]["content"] = (
-                                "You are an image editing AI. "
-                                "The user will provide an image and editing instructions. "
-                                "You must edit the image exactly as described and output ONLY the edited image. "
-                                "Do not include any text, description, or commentary. "
-                                "Your response must contain exclusively the final image."
-                            )
-                            continue  # вторая попытка
-                        else:
-                            # Вторая попытка тоже дала текст – возвращаем текст
-                            return None, text
-                    else:
-                        logging.error(f"Pro (попытка {attempt+1}): пустой ответ")
-                        return None, None
-                # Декодируем изображение
-                if img_url.startswith("data:image/"):
-                    img_data = base64.b64decode(img_url.split(",", 1)[1])
-                else:
-                    img_data = requests.get(img_url).content
-                logging.info("Pro: изображение успешно получено")
-                return img_data, None
+    try:
+        resp = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
+        if resp.status_code == 200:
+            data = resp.json()
+            msg = data["choices"][0]["message"]
+            logging.info(f"PRO: полный ответ: {json.dumps(msg, ensure_ascii=False)[:500]}")
+            if "images" in msg and msg["images"]:
+                img_url = msg["images"][0]["image_url"]["url"]
+            elif msg.get("content", "").startswith("data:image/"):
+                img_url = msg["content"]
             else:
-                logging.error(f"Pro: ошибка {resp.status_code} – {resp.text[:300]}")
-                return None, None
-        except Exception as e:
-            logging.error(f"Pro: исключение {e}")
+                logging.error("PRO: изображение отсутствует, возможно текст.")
+                return None, msg.get("content")
+            if img_url.startswith("data:image/"):
+                return base64.b64decode(img_url.split(",", 1)[1]), None
+            else:
+                return requests.get(img_url).content, None
+        else:
+            logging.error(f"PRO: ошибка {resp.status_code} – {resp.text[:300]}")
             return None, None
-    return None, None
+    except Exception as e:
+        logging.error(f"PRO: исключение {e}")
+        return None, None
 
 def edit_image_flash(prompt, image_base64):
-    """Редактирование через Google Gemini 2.5 Flash Image (дёшево/стабильно)"""
+    """Редактирование через Google Gemini 2.5 Flash Image (стабильная)."""
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
@@ -257,29 +224,28 @@ def edit_image_flash(prompt, image_base64):
         ],
         "modalities": ["image", "text"]
     }
-    logging.info("Flash: отправка запроса...")
     try:
         resp = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
         if resp.status_code == 200:
             data = resp.json()
             msg = data["choices"][0]["message"]
-            logging.info(f"Flash: ответ получен. Содержимое: {json.dumps(msg, ensure_ascii=False)[:300]}")
+            logging.info(f"FLASH: ответ получен. Содержимое: {json.dumps(msg, ensure_ascii=False)[:300]}")
             if "images" in msg and msg["images"]:
                 img_url = msg["images"][0]["image_url"]["url"]
             elif msg.get("content", "").startswith("data:image/"):
                 img_url = msg["content"]
             else:
-                logging.error("Flash: изображение отсутствует.")
+                logging.error("FLASH: изображение отсутствует.")
                 return None, msg.get("content")
             if img_url.startswith("data:image/"):
                 return base64.b64decode(img_url.split(",", 1)[1]), None
             else:
                 return requests.get(img_url).content, None
         else:
-            logging.error(f"Flash: ошибка {resp.status_code} – {resp.text[:300]}")
+            logging.error(f"FLASH: ошибка {resp.status_code} – {resp.text[:300]}")
             return None, None
     except Exception as e:
-        logging.error(f"Flash: исключение {e}")
+        logging.error(f"FLASH: исключение {e}")
         return None, None
 
 # ================== 4. ГЛАВНОЕ МЕНЮ ==================
@@ -321,7 +287,7 @@ def menu_edit_photo(message):
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("💎 Nano Banana Pro", callback_data="edit_pro"),
-        InlineKeyboardButton("⚡ Gemini Flash (дешёво)", callback_data="edit_flash")
+        InlineKeyboardButton("⚡ Gemini Flash (дёшево)", callback_data="edit_flash")
     )
     bot.send_message(message.chat.id, "Выбери модель редактирования:", reply_markup=markup)
 
@@ -363,6 +329,24 @@ def select_edit_model(call):
         user_edit_model[chat_id] = 'flash'
         bot.answer_callback_query(call.id, "Выбрана Gemini Flash")
     bot.delete_message(chat_id, call.message.message_id)
+    # Теперь спрашиваем про лицо
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("🔒 Сохранить лицо", callback_data="face_keep"),
+        InlineKeyboardButton("🎨 Полное редактирование", callback_data="face_full")
+    )
+    bot.send_message(chat_id, "Как обрабатывать лицо на фото?", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('face_'))
+def select_face_mode(call):
+    chat_id = call.message.chat.id
+    if call.data == 'face_keep':
+        user_face_mode[chat_id] = 'keep_face'
+        bot.answer_callback_query(call.id, "Лицо будет сохранено")
+    else:
+        user_face_mode[chat_id] = 'full_edit'
+        bot.answer_callback_query(call.id, "Полное редактирование")
+    bot.delete_message(chat_id, call.message.message_id)
     user_state[chat_id] = "awaiting_photo"
     bot.send_message(chat_id, "📸 Загрузи фото, которое нужно отредактировать.", reply_markup=back_keyboard())
 
@@ -379,13 +363,18 @@ def handle_generate_prompt(message):
         img_data = generate_gigachat_image(prompt)
     else:
         waiting = bot.send_message(chat_id, "💎 Генерирую через Nano Banana Pro (платно)...")
+        short_prompt = prompt.split('.')[0].strip()
+        if len(short_prompt) > 300:
+            short_prompt = short_prompt[:300] + "..."
         headers = {
             "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://t.me/Jastick_bot",
+            "X-Title": "TelegramBot"
         }
         payload = {
             "model": "google/gemini-3-pro-image-preview",
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [{"role": "user", "content": short_prompt}],
             "modalities": ["image", "text"]
         }
         try:
@@ -445,7 +434,12 @@ def handle_awaiting_prompt(message):
         return
 
     model = user_edit_model.pop(chat_id, 'flash')
+    face_mode = user_face_mode.pop(chat_id, 'full_edit')
     user_state[chat_id] = None
+
+    # Добавляем инструкцию сохранения лица
+    if face_mode == 'keep_face':
+        prompt = "Keep the face and facial features completely unchanged. Do not modify the face. Only apply the following changes: " + prompt
 
     waiting = bot.send_message(chat_id, "🎨 Редактирую...")
 
@@ -457,9 +451,9 @@ def handle_awaiting_prompt(message):
         img_data, text = edit_image_flash(prompt, photo_base64)
         model_used = "Gemini Flash"
 
-    # Если основная не дала картинку, пробуем Flash как fallback
+    # Fallback на Flash, если Pro не дала изображения
     if not img_data and model == 'pro':
-        logging.warning("Pro не дала изображения, пробую Flash.")
+        logging.warning("PRO не дала изображения, пробую FLASH.")
         img_data, text = edit_image_flash(prompt, photo_base64)
         model_used = "Gemini Flash (запасной)"
 
@@ -469,15 +463,18 @@ def handle_awaiting_prompt(message):
         pass
 
     if img_data:
+        caption = f"✅ Отредактировано ({model_used})"
+        if face_mode == 'keep_face':
+            caption += " с сохранением лица"
         try:
             img = Image.open(io.BytesIO(img_data))
             img.thumbnail((800, 800), Image.LANCZOS)
             img = img.convert("RGB")
             buf = io.BytesIO()
             img.save(buf, format="JPEG", quality=85)
-            bot.send_photo(chat_id, buf.getvalue(), caption=f"✅ Отредактировано ({model_used})")
+            bot.send_photo(chat_id, buf.getvalue(), caption=caption)
         except:
-            bot.send_document(chat_id, img_data, caption=f"✅ Результат ({model_used})")
+            bot.send_document(chat_id, img_data, caption=caption)
     elif text:
         bot.send_message(chat_id, f"⚠️ Модель вернула текстовое описание:\n\n{text[:4000]}")
     else:
