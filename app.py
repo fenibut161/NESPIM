@@ -22,7 +22,7 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 GIGACHAT_AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY")
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_VIDEO_URL = "https://openrouter.ai/api/v1/videos"
+OPENROUTER_VIDEO_URL = "https://openrouter.ai/api/v1/videos"  # Правильный эндпоинт
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 bot.request_timeout = 120
@@ -228,7 +228,9 @@ def edit_image_flash_25(prompt, image_base64):
     except:
         return None, None
 
-# ================== 4. ГЕНЕРАЦИЯ ВИДЕО (АСИНХРОННАЯ) ==================
+# ================== 4. ГЕНЕРАЦИЯ ВИДЕО (ФИНАЛЬНАЯ ВЕРСИЯ) ==================
+
+# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 def compress_image_if_needed(b64_str, max_size=(640, 640), quality=80):
     try:
         img_data = base64.b64decode(b64_str)
@@ -241,74 +243,116 @@ def compress_image_if_needed(b64_str, max_size=(640, 640), quality=80):
         logging.error(f"Ошибка сжатия изображения: {e}")
         return b64_str
 
-def poll_video_task(polling_url, headers, chat_id, max_attempts=80, interval=10):
+def _is_valid_mp4(data):
+    """Проверяет, что данные — корректный MP4/MOV контейнер."""
+    if not data or len(data) < 500:
+        return False
+    # MP4 всегда содержит 'ftyp' в первых 100 байтах (обычно со смещением 4)
+    return b'ftyp' in data[:100]
+
+def _send_video_safe(chat_id, data, caption="✅ Ваше видео готово!"):
+    """Отправляет видео в Telegram, оборачивая bytes в BytesIO."""
+    try:
+        video_file = io.BytesIO(data)
+        video_file.name = "video.mp4"
+        bot.send_video(
+            chat_id,
+            video_file,
+            caption=caption,
+            supports_streaming=True,
+            timeout=120
+        )
+        logging.info(f"Видео отправлено в чат {chat_id}")
+        return True
+    except Exception as e:
+        logging.error(f"Ошибка send_video: {e}")
+        try:
+            doc_file = io.BytesIO(data)
+            doc_file.name = "video.mp4"
+            bot.send_document(chat_id, doc_file, caption="✅ Видео (как файл)")
+            return True
+        except Exception as e2:
+            logging.error(f"Ошибка send_document: {e2}")
+            bot.send_message(chat_id, "❌ Видео сгенерировано, но не удалось отправить файл.")
+            return False
+
+# --- ОСНОВНЫЕ ФУНКЦИИ ---
+def poll_video_task(polling_url, headers, chat_id, max_attempts=90, interval=10):
     """
     Опрос статуса генерации видео в фоновом потоке.
     При завершении отправляет видео или сообщение об ошибке.
     """
-    logging.info(f"Начинаю опрос по URL: {polling_url} для chat_id={chat_id}")
+    logging.info(f"Начинаю опрос: {polling_url} для chat_id={chat_id}")
     for attempt in range(1, max_attempts + 1):
         time.sleep(interval)
         try:
             resp = requests.get(polling_url, headers=headers, timeout=30)
-            if resp.status_code == 200:
-                data = resp.json()
-                logging.info(f"Опрос {attempt}: статус {data.get('status')}")
-                logging.info(f"Полный ответ: {json.dumps(data, ensure_ascii=False)}")
-                
-                status = data.get("status")
-                if status == "completed":
-                    job_id = polling_url.split('/')[-1]
-                    # Скачиваем через /content с авторизацией
-                    content_url = f"https://openrouter.ai/api/v1/videos/{job_id}/content?index=0"
-                    logging.info(f"Скачиваю видео по URL: {content_url}")
-                    video_response = requests.get(content_url, headers=headers, timeout=60)
-                    if video_response.status_code == 200 and len(video_response.content) > 500:
-                        logging.info(f"Видео скачано, размер {len(video_response.content)} байт")
-                        # Отправляем видео пользователю
-                        try:
-                            bot.send_video(chat_id, video_response.content, caption="✅ Ваше видео готово!")
-                        except Exception as e:
-                            logging.error(f"Ошибка отправки видео: {e}")
-                            bot.send_document(chat_id, video_response.content, caption="✅ Видео (как файл)")
-                    else:
-                        logging.error(f"Не удалось скачать видео через /content: "
-                                      f"статус {video_response.status_code}, "
-                                      f"размер {len(video_response.content)}")
-                        # Fallback: скачиваем по unsigned_urls, но С АВТОРИЗАЦИЕЙ
-                        unsigned_urls = data.get("unsigned_urls", [])
-                        if unsigned_urls:
-                            video_url = unsigned_urls[0]
-                            logging.info(f"Пробую скачать по unsigned_url: {video_url}")
-                            video_response = requests.get(video_url, headers=headers, timeout=60)
-                            if video_response.status_code == 200 and len(video_response.content) > 500:
-                                try:
-                                    bot.send_video(chat_id, video_response.content, caption="✅ Ваше видео готово!")
-                                except Exception as e:
-                                    logging.error(f"Ошибка отправки видео: {e}")
-                                    bot.send_document(chat_id, video_response.content, caption="✅ Видео (как файл)")
-                            else:
-                                bot.send_message(chat_id, "❌ Не удалось скачать готовое видео.")
+            if resp.status_code != 200:
+                logging.error(f"Опрос: статус {resp.status_code}, тело: {resp.text[:200]}")
+                continue
+
+            data = resp.json()
+            status = data.get("status")
+            logging.info(f"Опрос {attempt}: статус={status}")
+
+            if status == "completed":
+                job_id = polling_url.split('/')[-1]
+
+                # 1. Пробуем unsigned_urls — это ПРЯМЫЕ ссылки, НЕ передаём Authorization
+                unsigned_urls = data.get("unsigned_urls", [])
+                if unsigned_urls:
+                    video_url = unsigned_urls[0]
+                    logging.info(f"Скачиваю по unsigned_url: {video_url[:80]}...")
+                    try:
+                        video_resp = requests.get(video_url, timeout=60, allow_redirects=True)
+                        ct = video_resp.headers.get('Content-Type', 'unknown')
+                        logging.info(f"unsigned_url: статус {video_resp.status_code}, "
+                                     f"размер {len(video_resp.content)}, Content-Type: {ct}")
+                        if video_resp.status_code == 200 and _is_valid_mp4(video_resp.content):
+                            _send_video_safe(chat_id, video_resp.content)
+                            return
                         else:
-                            bot.send_message(chat_id, "❌ Не удалось получить ссылку на видео.")
-                    return  # завершаем поток
-                elif status in ["failed", "cancelled", "expired"]:
-                    logging.error(f"Задача завершилась с ошибкой: {data}")
-                    bot.send_message(chat_id, f"❌ Ошибка генерации видео: {status}")
-                    return
-                else:
-                    logging.info(f"Статус: {status}, ожидаем завершения...")
+                            logging.warning(f"unsigned_url вернул невалидный MP4. "
+                                          f"Первые 50 байт: {video_resp.content[:50].hex()}")
+                    except Exception as e:
+                        logging.error(f"Ошибка скачивания unsigned_url: {e}")
+
+                # 2. Fallback: endpoint /content с Authorization
+                content_url = f"https://openrouter.ai/api/v1/videos/{job_id}/content"
+                logging.info(f"Скачиваю через /content: {content_url}")
+                try:
+                    video_resp = requests.get(content_url, headers=headers, timeout=60)
+                    ct = video_resp.headers.get('Content-Type', 'unknown')
+                    logging.info(f"/content: статус {video_resp.status_code}, "
+                                 f"размер {len(video_resp.content)}, Content-Type: {ct}")
+                    if video_resp.status_code == 200 and _is_valid_mp4(video_resp.content):
+                        _send_video_safe(chat_id, video_resp.content)
+                        return
+                    else:
+                        logging.error(f"/content вернул невалидный MP4. "
+                                      f"Первые 50 байт: {video_resp.content[:50].hex()}")
+                except Exception as e:
+                    logging.error(f"Ошибка скачивания /content: {e}")
+
+                bot.send_message(chat_id, "❌ Видео сгенерировано, но файл повреждён или пустой.")
+                return
+
+            elif status in ["failed", "cancelled", "expired"]:
+                logging.error(f"Задача провалена: {data}")
+                bot.send_message(chat_id, f"❌ Ошибка генерации видео: {status}")
+                return
             else:
-                logging.error(f"Опрос: статус {resp.status_code}, ответ {resp.text[:200]}")
+                logging.info(f"В процессе: {status}")
+
         except Exception as e:
             logging.error(f"Ошибка опроса: {e}")
-    # Если вышли по таймауту
-    logging.error("Истекло время ожидания (более 20 минут)")
-    bot.send_message(chat_id, "❌ Время ожидания истекло. Попробуйте позже.")
+
+    bot.send_message(chat_id, "❌ Время ожидания истекло (более 15 минут).")
 
 def generate_video_seedance_async(chat_id, prompt, first_frame_b64=None, last_frame_b64=None):
     """
     Запускает генерацию видео в фоновом потоке.
+    Сначала пробует bytedance/seedance-2.0, при ошибке — bytedance/seedance-2.0-fast.
     """
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
@@ -316,12 +360,10 @@ def generate_video_seedance_async(chat_id, prompt, first_frame_b64=None, last_fr
         "HTTP-Referer": "https://t.me/Jastick_bot",
         "X-Title": "TelegramBot"
     }
-    
     models_to_try = ["bytedance/seedance-2.0", "bytedance/seedance-2.0-fast"]
-    
-    # Первый запрос — пробуем модели по очереди
+
     for model in models_to_try:
-        logging.info(f"Пробую модель: {model} для chat_id={chat_id}")
+        logging.info(f"Пробую модель {model} для chat_id={chat_id}")
         payload = {
             "model": model,
             "prompt": prompt,
@@ -332,72 +374,69 @@ def generate_video_seedance_async(chat_id, prompt, first_frame_b64=None, last_fr
 
         frame_images = []
         if first_frame_b64:
-            compressed_first = compress_image_if_needed(first_frame_b64)
+            compressed = compress_image_if_needed(first_frame_b64)
             frame_images.append({
                 "type": "image_url",
-                "image_url": {
-                    "url": f"data:image/jpeg;base64,{compressed_first}"
-                },
+                "image_url": {"url": f"data:image/jpeg;base64,{compressed}"},
                 "frame_type": "first_frame"
             })
         if last_frame_b64:
-            compressed_last = compress_image_if_needed(last_frame_b64)
+            compressed = compress_image_if_needed(last_frame_b64)
             frame_images.append({
                 "type": "image_url",
-                "image_url": {
-                    "url": f"data:image/jpeg;base64,{compressed_last}"
-                },
+                "image_url": {"url": f"data:image/jpeg;base64,{compressed}"},
                 "frame_type": "last_frame"
             })
         if frame_images:
             payload["frame_images"] = frame_images
 
-        logging.info(f"=== ЗАПРОС К {model} === URL: {OPENROUTER_VIDEO_URL}")
-        safe_payload = {k: v for k, v in payload.items()}
-        if "frame_images" in safe_payload:
-            safe_payload["frame_images"] = [
-                {**item, "image_url": {"url": "<base64>"}} for item in safe_payload["frame_images"]
+        # Логируем payload без base64
+        safe = {k: v for k, v in payload.items()}
+        if "frame_images" in safe:
+            safe["frame_images"] = [
+                {**item, "image_url": {"url": "<base64>"}} for item in safe["frame_images"]
             ]
-        logging.info(f"Payload: {json.dumps(safe_payload, ensure_ascii=False)}")
+        logging.info(f"Payload: {json.dumps(safe, ensure_ascii=False)}")
 
         try:
             resp = requests.post(OPENROUTER_VIDEO_URL, json=payload, headers=headers, timeout=60)
-            logging.info(f"Seedance: HTTP {resp.status_code}")
-            logging.info(f"Seedance: ответ: {resp.text[:500]}")
+            logging.info(f"{model}: HTTP {resp.status_code}")
+            logging.info(f"{model}: ответ: {resp.text[:500]}")
 
-            if resp.status_code in (200, 202):
-                data = resp.json()
-                if "polling_url" in data:
-                    # Запускаем фоновый опрос
-                    Thread(target=poll_video_task, args=(data["polling_url"], headers, chat_id), daemon=True).start()
-                    return True  # Задача запущена
-                else:
-                    # Возможно, видео пришло сразу
-                    if "unsigned_urls" in data and data["unsigned_urls"]:
-                        video_url = data["unsigned_urls"][0]
-                        video_data = requests.get(video_url, headers=headers, timeout=60)
-                        if video_data.status_code == 200 and len(video_data.content) > 500:
-                            try:
-                                bot.send_video(chat_id, video_data.content, caption="✅ Ваше видео готово!")
-                            except Exception as e:
-                                logging.error(f"Ошибка отправки видео: {e}")
-                                bot.send_document(chat_id, video_data.content, caption="✅ Видео (как файл)")
-                            return True
-                    elif "b64_json" in data:
-                        try:
-                            video_data = base64.b64decode(data["b64_json"])
-                            bot.send_video(chat_id, video_data, caption="✅ Ваше видео готово!")
-                            return True
-                        except:
-                            pass
-                    logging.error("Нет polling_url и нет готового видео в ответе")
-                    continue  # пробуем следующую модель
-            else:
+            if resp.status_code not in (200, 202):
                 logging.error(f"Ошибка {resp.status_code}: {resp.text[:300]}")
+                continue
+
+            data = resp.json()
+
+            if "polling_url" in data:
+                Thread(target=poll_video_task,
+                       args=(data["polling_url"], headers, chat_id),
+                       daemon=True).start()
+                return True
+
+            # Маловероятный случай: видео сразу готово
+            if "unsigned_urls" in data and data["unsigned_urls"]:
+                video_url = data["unsigned_urls"][0]
+                video_resp = requests.get(video_url, timeout=60, allow_redirects=True)
+                if video_resp.status_code == 200 and _is_valid_mp4(video_resp.content):
+                    _send_video_safe(chat_id, video_resp.content)
+                    return True
+
+            if "b64_json" in data:
+                try:
+                    raw = base64.b64decode(data["b64_json"])
+                    if _is_valid_mp4(raw):
+                        _send_video_safe(chat_id, raw)
+                        return True
+                except Exception:
+                    pass
+
+            logging.warning("Нет polling_url, пробую следующую модель...")
+
         except Exception as e:
             logging.error(f"Исключение при запросе к {model}: {e}")
-    
-    # Если все модели не сработали
+
     bot.send_message(chat_id, "❌ Не удалось запустить генерацию видео. Попробуйте позже.")
     return False
 
