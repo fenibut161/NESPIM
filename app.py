@@ -30,10 +30,10 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
 # Словари состояний
-user_state = {}          # текущее состояние пользователя
-user_edit_model = {}     # модель редактирования (только nanobanana, но оставим для совместимости)
-user_generate_model = {} # модель генерации (gigachat / nanobanana)
-user_pending_photo = {}  # временное хранение base64 фото для редактирования
+user_state = {}
+user_edit_model = {}     # 'pro' или 'flash'
+user_generate_model = {} # 'gigachat' или 'nanobanana'
+user_pending_photo = {}
 
 # ================== 1. GIGACHAT (KANDINSKY) ==================
 def get_gigachat_token():
@@ -147,12 +147,9 @@ def ask_openrouter_text(prompt):
     except Exception as e:
         return f"⚠️ Ошибка соединения: {e}"
 
-# ================== 3. РЕДАКТИРОВАНИЕ ЧЕРЕЗ NANO BANANA PRO ==================
-def edit_image_nanobanana(prompt, image_base64):
-    """
-    Редактирование через google/gemini-3-pro-image-preview (Nano Banana Pro).
-    Возвращает кортеж (image_bytes, text_response). Одно из значений может быть None.
-    """
+# ================== 3. РЕДАКТИРОВАНИЕ ИЗОБРАЖЕНИЙ ==================
+def edit_image_pro(prompt, image_base64):
+    """Редактирование через Google Gemini 3 Pro Image Preview (Nano Banana Pro)"""
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
@@ -164,12 +161,7 @@ def edit_image_nanobanana(prompt, image_base64):
         "messages": [
             {
                 "role": "system",
-                "content": (
-                    "Ты — ассистент по редактированию изображений. "
-                    "Пользователь пришлёт изображение и описание правок. "
-                    "Отредактируй изображение строго по описанию и верни только изображение, "
-                    "без каких-либо текстовых пояснений."
-                )
+                "content": "Ты — редактор изображений. Отредактируй прикреплённое изображение по описанию пользователя и верни только готовое изображение."
             },
             {
                 "role": "user",
@@ -181,38 +173,76 @@ def edit_image_nanobanana(prompt, image_base64):
         ],
         "modalities": ["image", "text"]
     }
+    logging.info("Pro: отправка запроса...")
     try:
-        logging.info("Nano Banana Pro: запрос редактирования...")
         resp = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
         if resp.status_code == 200:
             data = resp.json()
-            logging.info(f"Nano Banana Pro: ответ (первые 500 символов): {json.dumps(data, ensure_ascii=False)[:500]}")
-            msg = data["choices"][0].get("message", {})
-            # Ищем изображение
-            if "images" in msg and len(msg["images"]) > 0:
+            msg = data["choices"][0]["message"]
+            logging.info(f"Pro: ответ получен. Содержимое: {json.dumps(msg, ensure_ascii=False)[:300]}")
+            if "images" in msg and msg["images"]:
                 img_url = msg["images"][0]["image_url"]["url"]
+            elif msg.get("content", "").startswith("data:image/"):
+                img_url = msg["content"]
             else:
-                content = msg.get("content", "")
-                if content and content.startswith("data:image/png;base64,"):
-                    img_url = content
-                else:
-                    text_response = msg.get("content", None)
-                    logging.error("Nano Banana Pro: изображение не получено, модель вернула текст.")
-                    return None, text_response
-            # Обрабатываем URL
+                logging.error("Pro: изображение отсутствует, возможно текст.")
+                return None, msg.get("content")
+            # Декодируем
             if img_url.startswith("data:image/"):
-                base64_part = img_url.split(",", 1)[1]
-                logging.info("Nano Banana Pro: изображение получено из base64")
-                return base64.b64decode(base64_part), None
+                return base64.b64decode(img_url.split(",", 1)[1]), None
             else:
-                img_data = requests.get(img_url).content
-                logging.info("Nano Banana Pro: изображение скачано по URL")
-                return img_data, None
+                return requests.get(img_url).content, None
         else:
-            logging.error(f"Nano Banana Pro: ошибка API {resp.status_code}: {resp.text[:300]}")
+            logging.error(f"Pro: ошибка {resp.status_code} – {resp.text[:300]}")
             return None, None
     except Exception as e:
-        logging.error(f"Nano Banana Pro: исключение: {e}")
+        logging.error(f"Pro: исключение {e}")
+        return None, None
+
+def edit_image_flash(prompt, image_base64):
+    """Редактирование через Google Gemini 2.5 Flash Image (дёшево/стабильно)"""
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://t.me/Jastick_bot",
+        "X-Title": "TelegramBot"
+    }
+    payload = {
+        "model": "google/gemini-2.5-flash-image",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
+                ]
+            }
+        ],
+        "modalities": ["image", "text"]
+    }
+    logging.info("Flash: отправка запроса...")
+    try:
+        resp = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
+        if resp.status_code == 200:
+            data = resp.json()
+            msg = data["choices"][0]["message"]
+            logging.info(f"Flash: ответ получен. Содержимое: {json.dumps(msg, ensure_ascii=False)[:300]}")
+            if "images" in msg and msg["images"]:
+                img_url = msg["images"][0]["image_url"]["url"]
+            elif msg.get("content", "").startswith("data:image/"):
+                img_url = msg["content"]
+            else:
+                logging.error("Flash: изображение отсутствует.")
+                return None, msg.get("content")
+            if img_url.startswith("data:image/"):
+                return base64.b64decode(img_url.split(",", 1)[1]), None
+            else:
+                return requests.get(img_url).content, None
+        else:
+            logging.error(f"Flash: ошибка {resp.status_code} – {resp.text[:300]}")
+            return None, None
+    except Exception as e:
+        logging.error(f"Flash: исключение {e}")
         return None, None
 
 # ================== 4. ГЛАВНОЕ МЕНЮ ==================
@@ -232,16 +262,12 @@ def send_main_menu(chat_id, text="Главное меню:"):
 def back_keyboard():
     return ReplyKeyboardMarkup(resize_keyboard=True).add(KeyboardButton("🔙 Главное меню"))
 
-def send_back_button(chat_id, text="Нажми кнопку для возврата"):
-    bot.send_message(chat_id, text, reply_markup=back_keyboard())
-
-# ================== 5. ОБРАБОТЧИКИ КОМАНД ==================
+# ================== 5. ОБРАБОТЧИКИ ==================
 @bot.message_handler(commands=['start'])
 def start(message):
     user_state[message.chat.id] = None
     send_main_menu(message.chat.id, "👋 Привет! Выбери действие:")
 
-# ----------------- Обработка кнопок главного меню -----------------
 @bot.message_handler(func=lambda m: m.text == "🖼 Создать изображение")
 def menu_generate_image(message):
     user_state[message.chat.id] = "select_model_generate"
@@ -257,29 +283,26 @@ def menu_edit_photo(message):
     user_state[message.chat.id] = "select_model_edit"
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
-        InlineKeyboardButton("💎 Nano Banana Pro (платно)", callback_data="edit_nanobanana"),
-        InlineKeyboardButton("❌ Отмена", callback_data="edit_cancel")
+        InlineKeyboardButton("💎 Nano Banana Pro", callback_data="edit_pro"),
+        InlineKeyboardButton("⚡ Gemini Flash (дешёво)", callback_data="edit_flash")
     )
-    bot.send_message(message.chat.id, "Редактирование фото доступно только через Nano Banana Pro (платно). Выберите действие:", reply_markup=markup)
+    bot.send_message(message.chat.id, "Выбери модель редактирования:", reply_markup=markup)
 
 @bot.message_handler(func=lambda m: m.text == "🎥 Создать видео")
 def menu_video(message):
-    send_back_button(message.chat.id, "🎥 Функция создания видео пока в разработке.")
+    bot.send_message(message.chat.id, "🎥 Функция создания видео пока в разработке.", reply_markup=back_keyboard())
 
 @bot.message_handler(func=lambda m: m.text == "💬 Спросить (чат)")
 def menu_chat(message):
     user_state[message.chat.id] = None
-    bot.send_message(message.chat.id, "Задай любой вопрос. Для возврата в меню нажми кнопку «🔙 Главное меню»",
-                     reply_markup=back_keyboard())
+    bot.send_message(message.chat.id, "Задай любой вопрос. Для возврата нажми «🔙 Главное меню»", reply_markup=back_keyboard())
 
 @bot.message_handler(func=lambda m: m.text == "🔙 Главное меню")
 def back_to_main(message):
     user_state[message.chat.id] = None
-    user_edit_model.pop(message.chat.id, None)
-    user_generate_model.pop(message.chat.id, None)
     send_main_menu(message.chat.id)
 
-# ----------------- Обработка выбора модели (инлайн-колбэки) -----------------
+# Инлайн-колбэки
 @bot.callback_query_handler(func=lambda call: call.data.startswith('gen_'))
 def select_generate_model(call):
     chat_id = call.message.chat.id
@@ -296,75 +319,57 @@ def select_generate_model(call):
 @bot.callback_query_handler(func=lambda call: call.data.startswith('edit_'))
 def select_edit_model(call):
     chat_id = call.message.chat.id
-    if call.data == 'edit_cancel':
-        bot.answer_callback_query(call.id, "Отмена")
-        bot.delete_message(chat_id, call.message.message_id)
-        user_state[chat_id] = None
-        send_main_menu(chat_id)
-        return
-    # Единственный вариант – nanobanana
-    user_edit_model[chat_id] = 'nanobanana'
-    bot.answer_callback_query(call.id, "Выбрана Nano Banana Pro")
+    if call.data == 'edit_pro':
+        user_edit_model[chat_id] = 'pro'
+        bot.answer_callback_query(call.id, "Выбрана Nano Banana Pro")
+    else:
+        user_edit_model[chat_id] = 'flash'
+        bot.answer_callback_query(call.id, "Выбрана Gemini Flash")
     bot.delete_message(chat_id, call.message.message_id)
     user_state[chat_id] = "awaiting_photo"
     bot.send_message(chat_id, "📸 Загрузи фото, которое нужно отредактировать.", reply_markup=back_keyboard())
 
-# ----------------- Обработка ввода описания для генерации -----------------
+# Генерация промта
 @bot.message_handler(func=lambda m: user_state.get(m.chat.id) == "awaiting_generate_prompt")
 def handle_generate_prompt(message):
     chat_id = message.chat.id
     prompt = message.text
-    model = user_generate_model.get(chat_id, 'gigachat')
+    model = user_generate_model.pop(chat_id, 'gigachat')
     user_state[chat_id] = None
-    user_generate_model.pop(chat_id, None)
 
     if model == 'gigachat':
         waiting = bot.send_message(chat_id, "🎨 Генерирую через GigaChat...")
         img_data = generate_gigachat_image(prompt)
-    else:  # nanobanana text-to-image
+    else:
         waiting = bot.send_message(chat_id, "💎 Генерирую через Nano Banana Pro (платно)...")
         headers = {
             "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://t.me/Jastick_bot",
-            "X-Title": "TelegramBot"
+            "Content-Type": "application/json"
         }
         payload = {
             "model": "google/gemini-3-pro-image-preview",
-            "messages": [
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
+            "messages": [{"role": "user", "content": prompt}],
             "modalities": ["image", "text"]
         }
         try:
-            logging.info("Nano Banana Pro: запрос text-to-image...")
             resp = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
             if resp.status_code == 200:
                 data = resp.json()
-                msg = data["choices"][0].get("message", {})
-                if "images" in msg and len(msg["images"]) > 0:
+                msg = data["choices"][0]["message"]
+                if "images" in msg and msg["images"]:
                     img_url = msg["images"][0]["image_url"]["url"]
+                elif msg.get("content", "").startswith("data:image/"):
+                    img_url = msg["content"]
                 else:
-                    content = msg.get("content", "")
-                    if content and content.startswith("data:image/png;base64,"):
-                        img_url = content
-                    else:
-                        logging.error("Nano Banana Pro: нет изображения в ответе")
-                        img_data = None
+                    img_data = None
                 if img_url:
                     if img_url.startswith("data:image/"):
-                        base64_part = img_url.split(",", 1)[1]
-                        img_data = base64.b64decode(base64_part)
+                        img_data = base64.b64decode(img_url.split(",", 1)[1])
                     else:
                         img_data = requests.get(img_url).content
             else:
-                logging.error(f"Nano Banana Pro: ошибка {resp.status_code}: {resp.text[:300]}")
                 img_data = None
-        except Exception as e:
-            logging.error(f"Nano Banana Pro: исключение: {e}")
+        except:
             img_data = None
 
     if img_data:
@@ -373,43 +378,53 @@ def handle_generate_prompt(message):
             img.thumbnail((800, 800), Image.LANCZOS)
             img = img.convert("RGB")
             buf = io.BytesIO()
-            img.save(buf, format="JPEG", quality=85, optimize=True)
-            compressed = buf.getvalue()
+            img.save(buf, format="JPEG", quality=85)
+            bot.send_photo(chat_id, buf.getvalue(), caption="✅ Готово!")
         except:
-            compressed = img_data
-        try:
-            bot.delete_message(chat_id, waiting.message_id)
-        except:
-            pass
-        bot.send_photo(chat_id, compressed, caption="✅ Готово!")
+            bot.send_document(chat_id, img_data, caption="✅ Готово (файл)")
     else:
-        bot.edit_message_text("❌ Не удалось сгенерировать изображение.", chat_id, waiting.message_id)
+        bot.send_message(chat_id, "❌ Не удалось сгенерировать изображение.")
     send_main_menu(chat_id)
 
-# ----------------- Обработка загрузки фото (состояние awaiting_photo) -----------------
+# Загрузка фото для редактирования
 @bot.message_handler(content_types=['photo'], func=lambda m: user_state.get(m.chat.id) == "awaiting_photo")
 def handle_awaiting_photo(message):
     chat_id = message.chat.id
     user_state[chat_id] = "awaiting_prompt"
     file_info = bot.get_file(message.photo[-1].file_id)
-    downloaded_file = bot.download_file(file_info.file_path)
-    user_pending_photo[chat_id] = base64.b64encode(downloaded_file).decode('utf-8')
+    downloaded = bot.download_file(file_info.file_path)
+    user_pending_photo[chat_id] = base64.b64encode(downloaded).decode('utf-8')
     bot.send_message(chat_id, "✏️ Теперь напиши, что изменить (промт):", reply_markup=back_keyboard())
 
-# ----------------- Обработка ввода промта после фото -----------------
+# Промт для редактирования
 @bot.message_handler(func=lambda m: user_state.get(m.chat.id) == "awaiting_prompt")
 def handle_awaiting_prompt(message):
     chat_id = message.chat.id
     prompt = message.text
     photo_base64 = user_pending_photo.pop(chat_id, None)
     if not photo_base64:
-        bot.send_message(chat_id, "⚠️ Сначала загрузи фото, а затем описание.")
+        bot.send_message(chat_id, "⚠️ Сначала загрузи фото.")
         send_main_menu(chat_id)
         return
 
+    model = user_edit_model.pop(chat_id, 'flash')
     user_state[chat_id] = None
-    waiting = bot.send_message(chat_id, "💎 Редактирую через Nano Banana Pro (платно)...")
-    img_data, text_response = edit_image_nanobanana(prompt, photo_base64)
+
+    waiting = bot.send_message(chat_id, "🎨 Редактирую...")
+
+    # Основная модель
+    if model == 'pro':
+        img_data, text = edit_image_pro(prompt, photo_base64)
+        model_used = "Nano Banana Pro"
+    else:
+        img_data, text = edit_image_flash(prompt, photo_base64)
+        model_used = "Gemini Flash"
+
+    # Если основная не дала картинку, пробуем Flash как fallback
+    if not img_data and model == 'pro':
+        logging.warning("Pro не дала изображения, пробую Flash.")
+        img_data, text = edit_image_flash(prompt, photo_base64)
+        model_used = "Gemini Flash (запасной)"
 
     try:
         bot.delete_message(chat_id, waiting.message_id)
@@ -422,19 +437,17 @@ def handle_awaiting_prompt(message):
             img.thumbnail((800, 800), Image.LANCZOS)
             img = img.convert("RGB")
             buf = io.BytesIO()
-            img.save(buf, format="JPEG", quality=85, optimize=True)
-            compressed = buf.getvalue()
-            bot.send_photo(chat_id, compressed, caption="✅ Отредактированное изображение")
-        except Exception as e:
-            logging.error(f"Ошибка сжатия/отправки: {e}")
-            bot.send_document(chat_id, img_data, caption="✅ Результат (документ)")
-    elif text_response:
-        bot.send_message(chat_id, f"⚠️ Модель не сгенерировала изображение, но прислала описание:\n\n{text_response[:4000]}")
+            img.save(buf, format="JPEG", quality=85)
+            bot.send_photo(chat_id, buf.getvalue(), caption=f"✅ Отредактировано ({model_used})")
+        except:
+            bot.send_document(chat_id, img_data, caption=f"✅ Результат ({model_used})")
+    elif text:
+        bot.send_message(chat_id, f"⚠️ Модель вернула текстовое описание:\n\n{text[:4000]}")
     else:
         bot.send_message(chat_id, "❌ Не удалось отредактировать изображение.")
     send_main_menu(chat_id)
 
-# ----------------- Обработка обычного текста (чат) -----------------
+# Чат
 @bot.message_handler(func=lambda m: True, content_types=['text'])
 def handle_text_chat(message):
     if message.text.startswith('/'):
@@ -445,7 +458,7 @@ def handle_text_chat(message):
     reply = ask_openrouter_text(message.text)
     bot.send_message(message.chat.id, reply, reply_markup=back_keyboard())
 
-# ----------------- Обработка всех остальных сообщений -----------------
+# Прочие сообщения
 @bot.message_handler(func=lambda m: True)
 def handle_other(message):
     bot.send_message(message.chat.id, "Пожалуйста, используй кнопки меню.")
