@@ -204,7 +204,7 @@ def edit_image_pro(prompt, image_base64):
         return None, None
 
 def edit_image_flash(prompt, image_base64):
-    """Редактирование через Google Gemini 2.5 Flash Image (стабильная)."""
+    """Редактирование через Google Gemini 3.1 Flash Image (улучшенная)."""
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
@@ -212,7 +212,7 @@ def edit_image_flash(prompt, image_base64):
         "X-Title": "TelegramBot"
     }
     payload = {
-        "model": "google/gemini-2.5-flash-image",
+        "model": "google/gemini-3.1-flash-image",
         "messages": [
             {
                 "role": "user",
@@ -229,23 +229,23 @@ def edit_image_flash(prompt, image_base64):
         if resp.status_code == 200:
             data = resp.json()
             msg = data["choices"][0]["message"]
-            logging.info(f"FLASH: ответ получен. Содержимое: {json.dumps(msg, ensure_ascii=False)[:300]}")
+            logging.info(f"FLASH 3.1: ответ получен. Содержимое: {json.dumps(msg, ensure_ascii=False)[:300]}")
             if "images" in msg and msg["images"]:
                 img_url = msg["images"][0]["image_url"]["url"]
             elif msg.get("content", "").startswith("data:image/"):
                 img_url = msg["content"]
             else:
-                logging.error("FLASH: изображение отсутствует.")
+                logging.error("FLASH 3.1: изображение отсутствует.")
                 return None, msg.get("content")
             if img_url.startswith("data:image/"):
                 return base64.b64decode(img_url.split(",", 1)[1]), None
             else:
                 return requests.get(img_url).content, None
         else:
-            logging.error(f"FLASH: ошибка {resp.status_code} – {resp.text[:300]}")
+            logging.error(f"FLASH 3.1: ошибка {resp.status_code} – {resp.text[:300]}")
             return None, None
     except Exception as e:
-        logging.error(f"FLASH: исключение {e}")
+        logging.error(f"FLASH 3.1: исключение {e}")
         return None, None
 
 # ================== 4. ГЛАВНОЕ МЕНЮ ==================
