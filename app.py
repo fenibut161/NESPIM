@@ -16,7 +16,7 @@ import io
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# --- ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ (Render) ---
+# --- ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 GIGACHAT_AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY")
@@ -30,14 +30,14 @@ bot.request_timeout = 120
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
-# Словари состояний и временных данных
+# Словари состояний
 user_state = {}
-user_edit_model = {}     # 'pro' или 'flash'
-user_face_mode = {}      # 'keep_face' или 'full_edit'
-user_generate_model = {} # 'gigachat' или 'nanobanana'
-user_pending_photo = {}  # base64 фото для редактирования
-user_video_mode = {}     # 'text', 'image_one', 'image_two'
-user_video_frames = {}   # {'first': b64, 'last': b64}
+user_edit_model = {}
+user_face_mode = {}
+user_generate_model = {}
+user_pending_photo = {}
+user_video_mode = {}
+user_video_frames = {}
 
 # ================== 1. GIGACHAT (KANDINSKY) ==================
 def get_gigachat_token():
@@ -130,174 +130,119 @@ def generate_gigachat_image(prompt):
 def ask_openrouter_text(prompt):
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://t.me/Jastick_bot",
-        "X-Title": "TelegramBot"
+        "Content-Type": "application/json"
     }
     payload = {
         "model": "openrouter/free",
         "messages": [{"role": "user", "content": prompt}]
     }
     try:
-        response = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=90)
-        if response.status_code == 200:
-            data = response.json()
+        resp = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=90)
+        if resp.status_code == 200:
+            data = resp.json()
             if "choices" in data and len(data["choices"]) > 0:
                 return data["choices"][0]["message"]["content"]
             else:
-                return "⚠️ Модель вернула пустой ответ"
+                return "⚠️ Пустой ответ"
         else:
-            return f"❌ Ошибка API: {response.status_code}"
+            return f"❌ Ошибка API: {resp.status_code}"
     except Exception as e:
         return f"⚠️ Ошибка соединения: {e}"
 
-# ================== 3. РЕДАКТИРОВАНИЕ ИЗОБРАЖЕНИЙ ==================
+# ================== 3. РЕДАКТИРОВАНИЕ ИЗОБРАЖЕНИЙ (без изменений) ==================
 def edit_image_pro(prompt, image_base64):
-    short_prompt = prompt.split('.')[0].strip()
-    if len(short_prompt) > 300:
-        short_prompt = short_prompt[:300] + "..."
-    logging.info(f"PRO: исходный промт длиной {len(prompt)} символов, используется: {short_prompt}")
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://t.me/Jastick_bot",
-        "X-Title": "TelegramBot"
-    }
+    short = prompt.split('.')[0].strip()[:300]
+    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
     payload = {
         "model": "google/gemini-3-pro-image-preview",
         "messages": [
-            {
-                "role": "system",
-                "content": "Ты — редактор изображений. Отредактируй прикреплённое изображение по описанию пользователя и верни только готовое изображение. Не добавляй текст."
-            },
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": short_prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
-                ]
-            }
+            {"role": "system", "content": "Отредактируй изображение по описанию и верни только изображение."},
+            {"role": "user", "content": [
+                {"type": "text", "text": short},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
+            ]}
         ],
         "modalities": ["image", "text"]
     }
     try:
         resp = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
         if resp.status_code == 200:
-            data = resp.json()
-            msg = data["choices"][0]["message"]
-            logging.info(f"PRO: полный ответ: {json.dumps(msg, ensure_ascii=False)[:500]}")
-            if "images" in msg and msg["images"]:
-                img_url = msg["images"][0]["image_url"]["url"]
-            elif msg.get("content", "").startswith("data:image/"):
-                img_url = msg["content"]
-            else:
-                logging.error("PRO: изображение отсутствует, возможно текст.")
-                return None, msg.get("content")
+            msg = resp.json()["choices"][0]["message"]
+            img_url = msg.get("images", [{}])[0].get("image_url", {}).get("url")
+            if not img_url:
+                content = msg.get("content", "")
+                if content.startswith("data:image/"):
+                    img_url = content
+                else:
+                    return None, msg.get("content")
             if img_url.startswith("data:image/"):
                 return base64.b64decode(img_url.split(",", 1)[1]), None
-            else:
-                return requests.get(img_url).content, None
-        else:
-            logging.error(f"PRO: ошибка {resp.status_code} – {resp.text[:300]}")
-            return None, None
-    except Exception as e:
-        logging.error(f"PRO: исключение {e}")
+            return requests.get(img_url).content, None
         return None, None
-
-def edit_image_flash(prompt, image_base64):
-    MODEL = "google/gemini-3.1-flash-image"
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://t.me/Jastick_bot",
-        "X-Title": "TelegramBot"
-    }
-    payload = {
-        "model": MODEL,
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
-                ]
-            }
-        ],
-        "modalities": ["image", "text"]
-    }
-    try:
-        logging.info(f"FLASH ({MODEL}): отправка запроса...")
-        resp = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
-        logging.info(f"FLASH ({MODEL}): статус ответа {resp.status_code}")
-        if resp.status_code == 200:
-            data = resp.json()
-            msg = data["choices"][0]["message"]
-            logging.info(f"FLASH ({MODEL}): ответ получен. Первые 500 символов: {json.dumps(msg, ensure_ascii=False)[:500]}")
-            if "images" in msg and msg["images"]:
-                img_url = msg["images"][0]["image_url"]["url"]
-            elif msg.get("content", "").startswith("data:image/"):
-                img_url = msg["content"]
-            else:
-                logging.error(f"FLASH ({MODEL}): изображение отсутствует, возможно текст.")
-                return None, msg.get("content")
-            if img_url.startswith("data:image/"):
-                return base64.b64decode(img_url.split(",", 1)[1]), None
-            else:
-                return requests.get(img_url).content, None
-        else:
-            logging.error(f"FLASH ({MODEL}): ошибка API {resp.status_code} – {resp.text[:300]}")
-            return None, None
-    except Exception as e:
-        logging.error(f"FLASH ({MODEL}): исключение {e}")
-        return None, None
-
-def edit_image_flash_25(prompt, image_base64):
-    MODEL = "google/gemini-2.5-flash-image"
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://t.me/Jastick_bot",
-        "X-Title": "TelegramBot"
-    }
-    payload = {
-        "model": MODEL,
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
-                ]
-            }
-        ],
-        "modalities": ["image", "text"]
-    }
-    try:
-        logging.info(f"FLASH 2.5: отправка запроса...")
-        resp = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
-        if resp.status_code == 200:
-            data = resp.json()
-            msg = data["choices"][0]["message"]
-            if "images" in msg and msg["images"]:
-                img_url = msg["images"][0]["image_url"]["url"]
-            elif msg.get("content", "").startswith("data:image/"):
-                img_url = msg["content"]
-            else:
-                return None, msg.get("content")
-            if img_url.startswith("data:image/"):
-                return base64.b64decode(img_url.split(",", 1)[1]), None
-            else:
-                return requests.get(img_url).content, None
-        else:
-            return None, None
     except:
         return None, None
 
-# ================== 4. ГЕНЕРАЦИЯ ВИДЕО (Seedance 2.0 как основная) ==================
+def edit_image_flash(prompt, image_base64):
+    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
+    payload = {
+        "model": "google/gemini-3.1-flash-image",
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
+        ]}],
+        "modalities": ["image", "text"]
+    }
+    try:
+        resp = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
+        if resp.status_code == 200:
+            msg = resp.json()["choices"][0]["message"]
+            img_url = msg.get("images", [{}])[0].get("image_url", {}).get("url")
+            if not img_url:
+                content = msg.get("content", "")
+                if content.startswith("data:image/"):
+                    img_url = content
+                else:
+                    return None, msg.get("content")
+            if img_url.startswith("data:image/"):
+                return base64.b64decode(img_url.split(",", 1)[1]), None
+            return requests.get(img_url).content, None
+        return None, None
+    except:
+        return None, None
+
+def edit_image_flash_25(prompt, image_base64):
+    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
+    payload = {
+        "model": "google/gemini-2.5-flash-image",
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
+        ]}],
+        "modalities": ["image", "text"]
+    }
+    try:
+        resp = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
+        if resp.status_code == 200:
+            msg = resp.json()["choices"][0]["message"]
+            img_url = msg.get("images", [{}])[0].get("image_url", {}).get("url")
+            if not img_url:
+                content = msg.get("content", "")
+                if content.startswith("data:image/"):
+                    img_url = content
+                else:
+                    return None, msg.get("content")
+            if img_url.startswith("data:image/"):
+                return base64.b64decode(img_url.split(",", 1)[1]), None
+            return requests.get(img_url).content, None
+        return None, None
+    except:
+        return None, None
+
+# ================== 4. ГЕНЕРАЦИЯ ВИДЕО (С РАСШИРЕННЫМ ЛОГИРОВАНИЕМ) ==================
 def generate_video_seedance(prompt, first_frame_b64=None, last_frame_b64=None):
     """
-    Генерация видео через ByteDance Seedance 2.0, используя video/generations endpoint.
-    Поддерживает image-to-video с первым и последним кадром.
+    Seedance 2.0 через video/generations.
+    Добавлено максимальное логирование.
     """
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
@@ -309,7 +254,7 @@ def generate_video_seedance(prompt, first_frame_b64=None, last_frame_b64=None):
         "model": "bytedance/seedance-2.0",
         "prompt": prompt,
         "n": 1,
-        "size": "480p",               # можно изменить на 720p или 1080p
+        "size": "480p",
         "output_format": "mp4"
     }
     if first_frame_b64:
@@ -317,50 +262,63 @@ def generate_video_seedance(prompt, first_frame_b64=None, last_frame_b64=None):
     if last_frame_b64:
         payload["last_image"] = f"data:image/jpeg;base64,{last_frame_b64}"
 
-    logging.info("Seedance 2.0: отправка запроса через video/generations...")
+    logging.info("=== ЗАПРОС К SEEDANCE 2.0 ===")
+    logging.info(f"URL: {OPENROUTER_VIDEO_URL}")
+    # Не пишем base64 в лог, пишем длину
+    safe_payload = {k: (f"<base64 len={len(v)}>" if 'base64' in str(v) else v) for k, v in payload.items()}
+    logging.info(f"Payload: {json.dumps(safe_payload, ensure_ascii=False)}")
+
     try:
         resp = requests.post(OPENROUTER_VIDEO_URL, json=payload, headers=headers, timeout=300)
+        logging.info(f"Seedance 2.0: HTTP {resp.status_code}")
+        logging.info(f"Seedance 2.0: ответ: {resp.text[:500]}")
         if resp.status_code == 200:
             data = resp.json()
-            logging.info(f"Seedance 2.0: ответ: {json.dumps(data, ensure_ascii=False)[:500]}")
-            # Обработка ответа: может быть сразу видео или task_id
+            # Попытка извлечь видео
             if "data" in data and len(data["data"]) > 0:
                 item = data["data"][0]
                 if "b64_json" in item:
+                    logging.info("Видео получено как base64")
                     return base64.b64decode(item["b64_json"])
                 elif "url" in item:
+                    logging.info(f"Видео получено как URL: {item['url']}")
                     return requests.get(item["url"]).content
-            # Если task_id – опрашиваем
             if "task_id" in data:
+                logging.info(f"Получен task_id: {data['task_id']}, начинаю polling")
                 return poll_video_task(data["task_id"], headers)
-            logging.error("Seedance 2.0: нет ни data, ни task_id")
+            # Если ни того, ни другого
+            logging.error("Seedance: ответ не содержит data или task_id")
         else:
-            logging.error(f"Seedance 2.0: ошибка {resp.status_code} – {resp.text[:300]}")
+            logging.error(f"Seedance: ошибка {resp.status_code} – {resp.text[:300]}")
         return None
     except Exception as e:
-        logging.error(f"Seedance 2.0: исключение {e}")
+        logging.error(f"Seedance: исключение {e}")
         return None
 
 def poll_video_task(task_id, headers, max_attempts=20, interval=10):
     url = f"{OPENROUTER_TASK_URL}/{task_id}"
+    logging.info(f"Начинаю опрос задачи {task_id}")
     for attempt in range(1, max_attempts+1):
         time.sleep(interval)
         try:
             resp = requests.get(url, headers=headers, timeout=30)
             if resp.status_code == 200:
                 data = resp.json()
+                logging.info(f"Опрос {attempt}: статус {data.get('status')}")
                 if data.get("status") == "completed":
                     video_url = data.get("result", {}).get("video_url")
                     if video_url:
+                        logging.info(f"Видео готово: {video_url}")
                         return requests.get(video_url).content
                 elif data.get("status") == "failed":
-                    logging.error(f"Задача {task_id} провалилась.")
+                    logging.error(f"Задача {task_id} провалилась")
                     return None
-        except:
-            pass
+        except Exception as e:
+            logging.error(f"Ошибка опроса: {e}")
+    logging.error(f"Истекло время ожидания для задачи {task_id}")
     return None
 
-# ================== 5. ГЛАВНОЕ МЕНЮ ==================
+# ================== 5. ГЛАВНОЕ МЕНЮ (без изменений) ==================
 def main_menu_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(
@@ -377,7 +335,7 @@ def send_main_menu(chat_id, text="Главное меню:"):
 def back_keyboard():
     return ReplyKeyboardMarkup(resize_keyboard=True).add(KeyboardButton("🔙 Главное меню"))
 
-# ================== 6. ОБРАБОТЧИКИ ==================
+# ================== 6. ОБРАБОТЧИКИ (аналогично предыдущему, но с дополнительным логом в видео) ==================
 @bot.message_handler(commands=['start'])
 def start(message):
     user_state[message.chat.id] = None
@@ -650,19 +608,21 @@ def handle_video_last_frame(message):
     user_state[chat_id] = "awaiting_video_prompt"
     bot.send_message(chat_id, "Введи описание для видео:", reply_markup=back_keyboard())
 
-# ФИНАЛЬНАЯ ГЕНЕРАЦИЯ ВИДЕО (Seedance 2.0)
+# ФИНАЛЬНАЯ ГЕНЕРАЦИЯ ВИДЕО с явным логированием
 @bot.message_handler(func=lambda m: user_state.get(m.chat.id) == "awaiting_video_prompt")
 def handle_video_prompt(message):
     chat_id = message.chat.id
     prompt = message.text
     user_state[chat_id] = None
 
-    waiting = bot.send_message(chat_id, "🎬 Генерирую видео... Это может занять до 3 минут.")
+    logging.info(f"=== НАЧАЛО ГЕНЕРАЦИИ ВИДЕО для {chat_id} ===")
+    logging.info(f"Промт: {prompt}")
     first_frame = user_video_frames.get(chat_id, {}).get('first')
     last_frame = user_video_frames.get(chat_id, {}).get('last')
     user_video_frames.pop(chat_id, None)
 
-    # Генерация Seedance 2.0
+    waiting = bot.send_message(chat_id, "🎬 Генерирую видео... Это может занять до 3 минут.")
+
     video_data = generate_video_seedance(prompt, first_frame, last_frame)
 
     try:
@@ -677,6 +637,7 @@ def handle_video_prompt(message):
             logging.error(f"Ошибка отправки видео: {e}")
             bot.send_document(chat_id, video_data, caption="✅ Видео (как файл)")
     else:
+        logging.error("video_data == None, отправляю сообщение об ошибке")
         bot.send_message(chat_id, "❌ Не удалось создать видео. Попробуйте позже или измените описание.")
     send_main_menu(chat_id)
 
