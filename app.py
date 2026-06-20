@@ -22,7 +22,7 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 GIGACHAT_AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY")
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_VIDEO_URL = "https://openrouter.ai/api/v1/video/generations"  # правильный эндпоинт
+OPENROUTER_VIDEO_URL = "https://openrouter.ai/api/v1/videos"          # исправленный эндпоинт
 OPENROUTER_TASK_URL = "https://openrouter.ai/api/v1/task"
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
@@ -238,7 +238,7 @@ def edit_image_flash_25(prompt, image_base64):
     except:
         return None, None
 
-# ================== 4. ГЕНЕРАЦИЯ ВИДЕО (С ИСПРАВЛЕННЫМ URL) ==================
+# ================== 4. ГЕНЕРАЦИЯ ВИДЕО (ИСПРАВЛЕННАЯ) ==================
 def compress_image_if_needed(b64_str, max_size=(640, 640), quality=80):
     try:
         img_data = base64.b64decode(b64_str)
@@ -251,6 +251,30 @@ def compress_image_if_needed(b64_str, max_size=(640, 640), quality=80):
         logging.error(f"Ошибка сжатия изображения: {e}")
         return b64_str
 
+def poll_video_task(polling_url, headers, max_attempts=40, interval=15):
+    logging.info(f"Начинаю опрос по URL: {polling_url}")
+    for attempt in range(1, max_attempts + 1):
+        time.sleep(interval)
+        try:
+            resp = requests.get(polling_url, headers=headers, timeout=30)
+            if resp.status_code == 200:
+                data = resp.json()
+                logging.info(f"Опрос {attempt}: статус {data.get('status')}")
+                if data.get("status") == "completed":
+                    video_urls = data.get("unsigned_urls", [])
+                    if video_urls:
+                        logging.info(f"Видео готово: {video_urls[0]}")
+                        return requests.get(video_urls[0]).content
+                elif data.get("status") == "failed":
+                    logging.error(f"Задача провалилась: {data}")
+                    return None
+            else:
+                logging.error(f"Опрос: статус {resp.status_code}, ответ {resp.text[:200]}")
+        except Exception as e:
+            logging.error(f"Ошибка опроса: {e}")
+    logging.error("Истекло время ожидания")
+    return None
+
 def generate_video_seedance(prompt, first_frame_b64=None, last_frame_b64=None):
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
@@ -261,72 +285,46 @@ def generate_video_seedance(prompt, first_frame_b64=None, last_frame_b64=None):
     payload = {
         "model": "bytedance/seedance-2.0",
         "prompt": prompt,
-        "n": 1,
-        "size": "480p",
-        "output_format": "mp4"
+        "resolution": "480p"
     }
+
+    frame_images = []
     if first_frame_b64:
         compressed_first = compress_image_if_needed(first_frame_b64)
-        payload["image"] = f"data:image/jpeg;base64,{compressed_first}"
+        frame_images.append({
+            "frame_type": "first_frame",
+            "image": f"data:image/jpeg;base64,{compressed_first}"
+        })
     if last_frame_b64:
         compressed_last = compress_image_if_needed(last_frame_b64)
-        payload["last_image"] = f"data:image/jpeg;base64,{compressed_last}"
+        frame_images.append({
+            "frame_type": "last_frame",
+            "image": f"data:image/jpeg;base64,{compressed_last}"
+        })
+    if frame_images:
+        payload["frame_images"] = frame_images
 
-    logging.info("=== ЗАПРОС К SEEDANCE 2.0 ===")
-    logging.info(f"URL: {OPENROUTER_VIDEO_URL}")
+    logging.info(f"=== ЗАПРОС К SEEDANCE 2.0 === URL: {OPENROUTER_VIDEO_URL}")
     safe_payload = {k: (f"<base64 len={len(v)}>" if 'base64' in str(v) else v) for k, v in payload.items()}
     logging.info(f"Payload: {json.dumps(safe_payload, ensure_ascii=False)}")
 
     try:
-        resp = requests.post(OPENROUTER_VIDEO_URL, json=payload, headers=headers, timeout=600)
-        logging.info(f"Seedance 2.0: HTTP {resp.status_code}")
-        logging.info(f"Seedance 2.0: полный ответ: {resp.text}")
+        resp = requests.post(OPENROUTER_VIDEO_URL, json=payload, headers=headers, timeout=60)
+        logging.info(f"Seedance: HTTP {resp.status_code}")
+        logging.info(f"Seedance: ответ: {resp.text[:500]}")
 
-        if resp.status_code == 200:
+        if resp.status_code in (200, 202):
             data = resp.json()
-            if "data" in data and len(data["data"]) > 0:
-                item = data["data"][0]
-                if "b64_json" in item:
-                    logging.info("Видео получено как base64")
-                    return base64.b64decode(item["b64_json"])
-                elif "url" in item:
-                    logging.info(f"Видео получено как URL: {item['url']}")
-                    return requests.get(item["url"]).content
-            if "task_id" in data:
-                logging.info(f"Получен task_id: {data['task_id']}, начинаю polling")
-                return poll_video_task(data["task_id"], headers, max_attempts=40, interval=15)
-            logging.error("Seedance: ответ не содержит data или task_id")
+            if "polling_url" in data:
+                return poll_video_task(data["polling_url"], headers)
+            else:
+                logging.error("Ответ не содержит polling_url")
         else:
-            logging.error(f"Seedance: ошибка {resp.status_code} – {resp.text[:500]}")
+            logging.error(f"Ошибка {resp.status_code}: {resp.text[:300]}")
         return None
     except Exception as e:
-        logging.error(f"Seedance: исключение {e}")
+        logging.error(f"Исключение: {e}")
         return None
-
-def poll_video_task(task_id, headers, max_attempts=40, interval=15):
-    url = f"{OPENROUTER_TASK_URL}/{task_id}"
-    logging.info(f"Начинаю опрос задачи {task_id}")
-    for attempt in range(1, max_attempts + 1):
-        time.sleep(interval)
-        try:
-            resp = requests.get(url, headers=headers, timeout=30)
-            if resp.status_code == 200:
-                data = resp.json()
-                logging.info(f"Опрос {attempt}: статус {data.get('status')}")
-                if data.get("status") == "completed":
-                    video_url = data.get("result", {}).get("video_url")
-                    if video_url:
-                        logging.info(f"Видео готово: {video_url}")
-                        return requests.get(video_url).content
-                elif data.get("status") == "failed":
-                    logging.error(f"Задача {task_id} провалилась: {data}")
-                    return None
-            else:
-                logging.error(f"Опрос: статус {resp.status_code}, ответ {resp.text[:200]}")
-        except Exception as e:
-            logging.error(f"Ошибка опроса: {e}")
-    logging.error(f"Истекло время ожидания для задачи {task_id}")
-    return None
 
 # ================== 5. ГЛАВНОЕ МЕНЮ ==================
 def main_menu_keyboard():
