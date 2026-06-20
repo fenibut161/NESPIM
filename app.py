@@ -149,19 +149,31 @@ def ask_openrouter_text(prompt):
 
 # ================== 3. РЕДАКТИРОВАНИЕ ИЗОБРАЖЕНИЙ ==================
 def edit_image_pro(prompt, image_base64):
-    """Редактирование через Google Gemini 3 Pro Image Preview (Nano Banana Pro)"""
+    """
+    Редактирование через Google Gemini 3 Pro Image Preview.
+    При длинных промтах автоматически ужесточает инструкцию, чтобы получить именно картинку.
+    Возвращает (image_bytes, text_response) – одно из значений может быть None.
+    """
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
         "HTTP-Referer": "https://t.me/Jastick_bot",
         "X-Title": "TelegramBot"
     }
-    payload = {
+
+    # Первая попытка: обычный системный промт
+    payload1 = {
         "model": "google/gemini-3-pro-image-preview",
         "messages": [
             {
                 "role": "system",
-                "content": "Ты — редактор изображений. Отредактируй прикреплённое изображение по описанию пользователя и верни только готовое изображение."
+                "content": (
+                    "Ты — ассистент по редактированию изображений. "
+                    "Пользователь пришлёт изображение и описание правок. "
+                    "Твоя задача — отредактировать изображение в соответствии с описанием и вернуть **только** отредактированное изображение. "
+                    "Не пиши никаких пояснений, описаний или комментариев. "
+                    "Твой ответ должен содержать исключительно изображение."
+                )
             },
             {
                 "role": "user",
@@ -171,33 +183,58 @@ def edit_image_pro(prompt, image_base64):
                 ]
             }
         ],
-        "modalities": ["image", "text"]
+        "modalities": ["image", "text"],
+        "max_tokens": 4096
     }
-    logging.info("Pro: отправка запроса...")
-    try:
-        resp = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
-        if resp.status_code == 200:
-            data = resp.json()
-            msg = data["choices"][0]["message"]
-            logging.info(f"Pro: ответ получен. Содержимое: {json.dumps(msg, ensure_ascii=False)[:300]}")
-            if "images" in msg and msg["images"]:
-                img_url = msg["images"][0]["image_url"]["url"]
-            elif msg.get("content", "").startswith("data:image/"):
-                img_url = msg["content"]
+
+    for attempt in range(2):
+        try:
+            logging.info(f"Pro (попытка {attempt+1}): отправка запроса...")
+            resp = requests.post(OPENROUTER_URL, json=payload1, headers=headers, timeout=120)
+            if resp.status_code == 200:
+                data = resp.json()
+                msg = data["choices"][0]["message"]
+                logging.info(f"Pro: ответ получен. Содержимое: {json.dumps(msg, ensure_ascii=False)[:300]}")
+                # Ищем изображение
+                if "images" in msg and msg["images"]:
+                    img_url = msg["images"][0]["image_url"]["url"]
+                elif msg.get("content", "").startswith("data:image/"):
+                    img_url = msg["content"]
+                else:
+                    # Изображения нет — возможно текстовый ответ
+                    text = msg.get("content", "").strip()
+                    if text:
+                        logging.warning(f"Pro (попытка {attempt+1}): получен текст, а не изображение. Текст: {text[:200]}...")
+                        if attempt == 0:
+                            # Повторяем с более жёстким системным промтом
+                            payload1["messages"][0]["content"] = (
+                                "You are an image editing AI. "
+                                "The user will provide an image and editing instructions. "
+                                "You must edit the image exactly as described and output ONLY the edited image. "
+                                "Do not include any text, description, or commentary. "
+                                "Your response must contain exclusively the final image."
+                            )
+                            continue  # вторая попытка
+                        else:
+                            # Вторая попытка тоже дала текст – возвращаем текст
+                            return None, text
+                    else:
+                        logging.error(f"Pro (попытка {attempt+1}): пустой ответ")
+                        return None, None
+                # Декодируем изображение
+                if img_url.startswith("data:image/"):
+                    img_data = base64.b64decode(img_url.split(",", 1)[1])
+                else:
+                    img_data = requests.get(img_url).content
+                logging.info("Pro: изображение успешно получено")
+                return img_data, None
             else:
-                logging.error("Pro: изображение отсутствует, возможно текст.")
-                return None, msg.get("content")
-            # Декодируем
-            if img_url.startswith("data:image/"):
-                return base64.b64decode(img_url.split(",", 1)[1]), None
-            else:
-                return requests.get(img_url).content, None
-        else:
-            logging.error(f"Pro: ошибка {resp.status_code} – {resp.text[:300]}")
+                logging.error(f"Pro: ошибка {resp.status_code} – {resp.text[:300]}")
+                return None, None
+        except Exception as e:
+            logging.error(f"Pro: исключение {e}")
             return None, None
-    except Exception as e:
-        logging.error(f"Pro: исключение {e}")
-        return None, None
+    return None, None
 
 def edit_image_flash(prompt, image_base64):
     """Редактирование через Google Gemini 2.5 Flash Image (дёшево/стабильно)"""
