@@ -21,8 +21,9 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 GIGACHAT_AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY")
 
+# ИСПРАВЛЕННЫЙ URL ДЛЯ ГЕНЕРАЦИИ ВИДЕО
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_VIDEO_URL = "https://openrouter.ai/api/v1/video/generations"
+OPENROUTER_VIDEO_URL = "https://openrouter.ai/api/v1/video"          # правильный эндпоинт
 OPENROUTER_TASK_URL = "https://openrouter.ai/api/v1/task"
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
@@ -238,11 +239,26 @@ def edit_image_flash_25(prompt, image_base64):
     except:
         return None, None
 
-# ================== 4. ГЕНЕРАЦИЯ ВИДЕО (С РАСШИРЕННЫМ ЛОГИРОВАНИЕМ) ==================
+# ================== 4. ГЕНЕРАЦИЯ ВИДЕО (ИСПРАВЛЕННАЯ) ==================
+def compress_image_if_needed(b64_str, max_size=(640, 640), quality=80):
+    """
+    Сжимает изображение, если оно слишком большое (опционально).
+    Можно использовать для уменьшения размера base64.
+    """
+    try:
+        img_data = base64.b64decode(b64_str)
+        img = Image.open(io.BytesIO(img_data))
+        img.thumbnail(max_size, Image.LANCZOS)
+        buf = io.BytesIO()
+        img.convert("RGB").save(buf, format="JPEG", quality=quality)
+        return base64.b64encode(buf.getvalue()).decode()
+    except Exception as e:
+        logging.error(f"Ошибка сжатия изображения: {e}")
+        return b64_str  # возвращаем как есть
+
 def generate_video_seedance(prompt, first_frame_b64=None, last_frame_b64=None):
     """
-    Seedance 2.0 через video/generations.
-    Добавлено максимальное логирование.
+    Генерация видео через OpenRouter (Seedance 2.0) с исправленным URL и увеличенными таймаутами.
     """
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
@@ -257,24 +273,27 @@ def generate_video_seedance(prompt, first_frame_b64=None, last_frame_b64=None):
         "size": "480p",
         "output_format": "mp4"
     }
+    # Если переданы кадры, сжимаем их для уменьшения размера (опционально)
     if first_frame_b64:
-        payload["image"] = f"data:image/jpeg;base64,{first_frame_b64}"
+        compressed_first = compress_image_if_needed(first_frame_b64)
+        payload["image"] = f"data:image/jpeg;base64,{compressed_first}"
     if last_frame_b64:
-        payload["last_image"] = f"data:image/jpeg;base64,{last_frame_b64}"
+        compressed_last = compress_image_if_needed(last_frame_b64)
+        payload["last_image"] = f"data:image/jpeg;base64,{compressed_last}"
 
     logging.info("=== ЗАПРОС К SEEDANCE 2.0 ===")
     logging.info(f"URL: {OPENROUTER_VIDEO_URL}")
-    # Не пишем base64 в лог, пишем длину
+    # Безопасное логирование (не выводим base64 целиком)
     safe_payload = {k: (f"<base64 len={len(v)}>" if 'base64' in str(v) else v) for k, v in payload.items()}
     logging.info(f"Payload: {json.dumps(safe_payload, ensure_ascii=False)}")
 
     try:
-        resp = requests.post(OPENROUTER_VIDEO_URL, json=payload, headers=headers, timeout=300)
+        resp = requests.post(OPENROUTER_VIDEO_URL, json=payload, headers=headers, timeout=600)  # увеличенный таймаут
         logging.info(f"Seedance 2.0: HTTP {resp.status_code}")
-        logging.info(f"Seedance 2.0: ответ: {resp.text[:500]}")
+        logging.info(f"Seedance 2.0: полный ответ: {resp.text}")  # полный лог для диагностики
+
         if resp.status_code == 200:
             data = resp.json()
-            # Попытка извлечь видео
             if "data" in data and len(data["data"]) > 0:
                 item = data["data"][0]
                 if "b64_json" in item:
@@ -285,20 +304,20 @@ def generate_video_seedance(prompt, first_frame_b64=None, last_frame_b64=None):
                     return requests.get(item["url"]).content
             if "task_id" in data:
                 logging.info(f"Получен task_id: {data['task_id']}, начинаю polling")
-                return poll_video_task(data["task_id"], headers)
-            # Если ни того, ни другого
+                return poll_video_task(data["task_id"], headers, max_attempts=40, interval=15)  # увеличенные параметры
             logging.error("Seedance: ответ не содержит data или task_id")
         else:
-            logging.error(f"Seedance: ошибка {resp.status_code} – {resp.text[:300]}")
+            logging.error(f"Seedance: ошибка {resp.status_code} – {resp.text[:500]}")
         return None
     except Exception as e:
         logging.error(f"Seedance: исключение {e}")
         return None
 
-def poll_video_task(task_id, headers, max_attempts=20, interval=10):
+def poll_video_task(task_id, headers, max_attempts=40, interval=15):
+    """Опрос статуса задачи генерации видео с увеличенным временем ожидания."""
     url = f"{OPENROUTER_TASK_URL}/{task_id}"
     logging.info(f"Начинаю опрос задачи {task_id}")
-    for attempt in range(1, max_attempts+1):
+    for attempt in range(1, max_attempts + 1):
         time.sleep(interval)
         try:
             resp = requests.get(url, headers=headers, timeout=30)
@@ -311,14 +330,16 @@ def poll_video_task(task_id, headers, max_attempts=20, interval=10):
                         logging.info(f"Видео готово: {video_url}")
                         return requests.get(video_url).content
                 elif data.get("status") == "failed":
-                    logging.error(f"Задача {task_id} провалилась")
+                    logging.error(f"Задача {task_id} провалилась: {data}")
                     return None
+            else:
+                logging.error(f"Опрос: статус {resp.status_code}, ответ {resp.text[:200]}")
         except Exception as e:
             logging.error(f"Ошибка опроса: {e}")
     logging.error(f"Истекло время ожидания для задачи {task_id}")
     return None
 
-# ================== 5. ГЛАВНОЕ МЕНЮ (без изменений) ==================
+# ================== 5. ГЛАВНОЕ МЕНЮ ==================
 def main_menu_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(
@@ -335,7 +356,7 @@ def send_main_menu(chat_id, text="Главное меню:"):
 def back_keyboard():
     return ReplyKeyboardMarkup(resize_keyboard=True).add(KeyboardButton("🔙 Главное меню"))
 
-# ================== 6. ОБРАБОТЧИКИ (аналогично предыдущему, но с дополнительным логом в видео) ==================
+# ================== 6. ОБРАБОТЧИКИ ==================
 @bot.message_handler(commands=['start'])
 def start(message):
     user_state[message.chat.id] = None
@@ -608,7 +629,7 @@ def handle_video_last_frame(message):
     user_state[chat_id] = "awaiting_video_prompt"
     bot.send_message(chat_id, "Введи описание для видео:", reply_markup=back_keyboard())
 
-# ФИНАЛЬНАЯ ГЕНЕРАЦИЯ ВИДЕО с явным логированием
+# ФИНАЛЬНАЯ ГЕНЕРАЦИЯ ВИДЕО
 @bot.message_handler(func=lambda m: user_state.get(m.chat.id) == "awaiting_video_prompt")
 def handle_video_prompt(message):
     chat_id = message.chat.id
@@ -621,7 +642,7 @@ def handle_video_prompt(message):
     last_frame = user_video_frames.get(chat_id, {}).get('last')
     user_video_frames.pop(chat_id, None)
 
-    waiting = bot.send_message(chat_id, "🎬 Генерирую видео... Это может занять до 3 минут.")
+    waiting = bot.send_message(chat_id, "🎬 Генерирую видео... Это может занять до 5 минут.")
 
     video_data = generate_video_seedance(prompt, first_frame, last_frame)
 
