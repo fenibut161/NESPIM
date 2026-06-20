@@ -22,8 +22,7 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 GIGACHAT_AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY")
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_VIDEO_URL = "https://openrouter.ai/api/v1/videos"          # исправленный эндпоинт
-OPENROUTER_TASK_URL = "https://openrouter.ai/api/v1/task"
+OPENROUTER_VIDEO_URL = "https://openrouter.ai/api/v1/videos"
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 bot.request_timeout = 120
@@ -39,7 +38,7 @@ user_pending_photo = {}
 user_video_mode = {}
 user_video_frames = {}
 
-# ================== 1. GIGACHAT (KANDINSKY) ==================
+# ================== 1. GIGACHAT ==================
 def get_gigachat_token():
     if not GIGACHAT_AUTH_KEY:
         logging.error("GigaChat: ключ авторизации не задан")
@@ -61,10 +60,10 @@ def get_gigachat_token():
             logging.info("GigaChat: токен успешно получен")
             return token
         else:
-            logging.error(f"GigaChat: ошибка получения токена {response.status_code}: {response.text[:200]}")
+            logging.error(f"GigaChat: ошибка получения токена {response.status_code}")
             return None
     except Exception as e:
-        logging.error(f"GigaChat: исключение при получении токена: {e}")
+        logging.error(f"GigaChat: исключение {e}")
         return None
 
 def download_gigachat_file(token, file_id):
@@ -73,13 +72,12 @@ def download_gigachat_file(token, file_id):
     try:
         response = requests.get(url, headers=headers, verify=False, timeout=30)
         if response.status_code == 200:
-            logging.info(f"GigaChat: файл {file_id} скачан, размер {len(response.content)} байт")
             return response.content
         else:
-            logging.error(f"GigaChat: ошибка скачивания файла {response.status_code}: {response.text[:200]}")
+            logging.error(f"GigaChat: ошибка скачивания {response.status_code}")
             return None
     except Exception as e:
-        logging.error(f"GigaChat: исключение при скачивании файла: {e}")
+        logging.error(f"GigaChat: исключение {e}")
         return None
 
 def generate_gigachat_image(prompt):
@@ -101,29 +99,21 @@ def generate_gigachat_image(prompt):
         "function_call": "auto"
     }
     try:
-        logging.info(f"GigaChat: запрос генерации (промт: {prompt[:100]}...)")
         response = requests.post(url, json=payload, headers=headers, verify=False, timeout=60)
-        logging.info(f"GigaChat: статус ответа {response.status_code}")
         if response.status_code == 200:
             data = response.json()
             content = data['choices'][0]['message']['content']
-            logging.info(f"GigaChat: контент ответа (первые 300 символов): {content[:300]}")
             match = re.search(r'src="([a-f0-9\-]+)"', content)
             if match:
                 file_id = match.group(1)
-                logging.info(f"GigaChat: найден file_id: {file_id}")
                 file_data = download_gigachat_file(token, file_id)
                 if file_data:
                     return file_data
-                else:
-                    logging.error("GigaChat: не удалось скачать файл по ID")
-            else:
-                logging.error("GigaChat: в ответе не найден src с file_id")
-                logging.error(f"Полный ответ: {json.dumps(data, ensure_ascii=False)[:500]}")
+            logging.error("GigaChat: не найден file_id в ответе")
         else:
-            logging.error(f"GigaChat: ошибка API {response.status_code}: {response.text[:300]}")
+            logging.error(f"GigaChat: ошибка {response.status_code}")
     except Exception as e:
-        logging.error(f"GigaChat: исключение: {e}")
+        logging.error(f"GigaChat: исключение {e}")
     return None
 
 # ================== 2. OPENROUTER ТЕКСТ ==================
@@ -260,14 +250,43 @@ def poll_video_task(polling_url, headers, max_attempts=40, interval=15):
             if resp.status_code == 200:
                 data = resp.json()
                 logging.info(f"Опрос {attempt}: статус {data.get('status')}")
+                logging.info(f"Полный ответ: {json.dumps(data, ensure_ascii=False)}")
+                
                 if data.get("status") == "completed":
-                    video_urls = data.get("unsigned_urls", [])
-                    if video_urls:
-                        logging.info(f"Видео готово: {video_urls[0]}")
-                        return requests.get(video_urls[0]).content
+                    # Проверяем разные возможные поля с видео
+                    video_url = None
+                    if "unsigned_urls" in data and data["unsigned_urls"]:
+                        video_url = data["unsigned_urls"][0]
+                    elif "result" in data and "video_url" in data["result"]:
+                        video_url = data["result"]["video_url"]
+                    elif "video_url" in data:
+                        video_url = data["video_url"]
+                    elif "url" in data:
+                        video_url = data["url"]
+                    elif "b64_json" in data:
+                        # Если пришёл base64
+                        try:
+                            return base64.b64decode(data["b64_json"])
+                        except:
+                            pass
+                    
+                    if video_url:
+                        logging.info(f"Скачиваю видео по URL: {video_url}")
+                        video_data = requests.get(video_url, timeout=60)
+                        if video_data.status_code == 200 and len(video_data.content) > 500:
+                            return video_data.content
+                        else:
+                            logging.error(f"Не удалось скачать видео: статус {video_data.status_code}, размер {len(video_data.content)}")
+                            # Возможно, это ошибка, но попробуем вернуть как есть
+                            return video_data.content if video_data.status_code == 200 else None
+                    else:
+                        logging.error("В ответе нет ссылки на видео")
+                        return None
                 elif data.get("status") == "failed":
                     logging.error(f"Задача провалилась: {data}")
                     return None
+                else:
+                    logging.info(f"Статус: {data.get('status')}, ожидаем завершения...")
             else:
                 logging.error(f"Опрос: статус {resp.status_code}, ответ {resp.text[:200]}")
         except Exception as e:
@@ -282,10 +301,14 @@ def generate_video_seedance(prompt, first_frame_b64=None, last_frame_b64=None):
         "HTTP-Referer": "https://t.me/Jastick_bot",
         "X-Title": "TelegramBot"
     }
+    # Основные параметры для Seedance 2.0
     payload = {
         "model": "bytedance/seedance-2.0",
         "prompt": prompt,
-        "resolution": "480p"
+        "duration": 5,           # длительность в секундах (можно вынести в настройки)
+        "resolution": "480p",
+        "fps": 24,
+        "response_format": "url"  # просим ссылку, а не base64
     }
 
     frame_images = []
@@ -318,7 +341,16 @@ def generate_video_seedance(prompt, first_frame_b64=None, last_frame_b64=None):
             if "polling_url" in data:
                 return poll_video_task(data["polling_url"], headers)
             else:
-                logging.error("Ответ не содержит polling_url")
+                # Возможно, видео пришло сразу
+                if "unsigned_urls" in data and data["unsigned_urls"]:
+                    video_url = data["unsigned_urls"][0]
+                    video_data = requests.get(video_url, timeout=60)
+                    if video_data.status_code == 200:
+                        return video_data.content
+                elif "b64_json" in data:
+                    return base64.b64decode(data["b64_json"])
+                else:
+                    logging.error("Нет polling_url и нет готового видео в ответе")
         else:
             logging.error(f"Ошибка {resp.status_code}: {resp.text[:300]}")
         return None
@@ -638,14 +670,16 @@ def handle_video_prompt(message):
     except:
         pass
 
-    if video_data:
+    if video_data and len(video_data) > 500:
         try:
+            # Пробуем отправить как видео
             bot.send_video(chat_id, video_data, caption="✅ Ваше видео готово!")
         except Exception as e:
             logging.error(f"Ошибка отправки видео: {e}")
+            # Если не получилось, отправляем как документ
             bot.send_document(chat_id, video_data, caption="✅ Видео (как файл)")
     else:
-        logging.error("video_data == None, отправляю сообщение об ошибке")
+        logging.error(f"video_data пустое или слишком маленькое: {len(video_data) if video_data else 0} байт")
         bot.send_message(chat_id, "❌ Не удалось создать видео. Попробуйте позже или измените описание.")
     send_main_menu(chat_id)
 
