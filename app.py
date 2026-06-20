@@ -150,12 +150,10 @@ def ask_openrouter_text(prompt):
 
 # ================== 3. РЕДАКТИРОВАНИЕ ИЗОБРАЖЕНИЙ ==================
 def edit_image_pro(prompt, image_base64):
-    """Редактирование через Google Gemini 3 Pro Image Preview с авто‑сокращением промта."""
     short_prompt = prompt.split('.')[0].strip()
     if len(short_prompt) > 300:
         short_prompt = short_prompt[:300] + "..."
     logging.info(f"PRO: исходный промт длиной {len(prompt)} символов, используется: {short_prompt}")
-
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
@@ -204,10 +202,7 @@ def edit_image_pro(prompt, image_base64):
         return None, None
 
 def edit_image_flash(prompt, image_base64):
-    """
-    Редактирование через Google Gemini 3.1 Flash Image.
-    Подробное логирование для диагностики.
-    """
+    """Редактирование через Google Gemini 3.1 Flash Image (с fallback до 2.5)."""
     MODEL = "google/gemini-3.1-flash-image"
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
@@ -243,7 +238,6 @@ def edit_image_flash(prompt, image_base64):
             else:
                 logging.error(f"FLASH ({MODEL}): изображение отсутствует, возможно текст.")
                 return None, msg.get("content")
-            # Обрабатываем URL
             if img_url.startswith("data:image/"):
                 return base64.b64decode(img_url.split(",", 1)[1]), None
             else:
@@ -255,7 +249,96 @@ def edit_image_flash(prompt, image_base64):
         logging.error(f"FLASH ({MODEL}): исключение {e}")
         return None, None
 
-# ================== 4. ГЛАВНОЕ МЕНЮ ==================
+def edit_image_flash_25(prompt, image_base64):
+    """Запасная модель Google Gemini 2.5 Flash Image."""
+    MODEL = "google/gemini-2.5-flash-image"
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://t.me/Jastick_bot",
+        "X-Title": "TelegramBot"
+    }
+    payload = {
+        "model": MODEL,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
+                ]
+            }
+        ],
+        "modalities": ["image", "text"]
+    }
+    try:
+        logging.info(f"FLASH 2.5: отправка запроса...")
+        resp = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
+        if resp.status_code == 200:
+            data = resp.json()
+            msg = data["choices"][0]["message"]
+            if "images" in msg and msg["images"]:
+                img_url = msg["images"][0]["image_url"]["url"]
+            elif msg.get("content", "").startswith("data:image/"):
+                img_url = msg["content"]
+            else:
+                return None, msg.get("content")
+            if img_url.startswith("data:image/"):
+                return base64.b64decode(img_url.split(",", 1)[1]), None
+            else:
+                return requests.get(img_url).content, None
+        else:
+            return None, None
+    except:
+        return None, None
+
+# ================== 4. ГЕНЕРАЦИЯ ВИДЕО ==================
+def generate_video_kling(prompt):
+    """Генерация видео через Kuaishou Kling v3.0 Pro (kwaivgi/kling-v3-pro)."""
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://t.me/Jastick_bot",
+        "X-Title": "TelegramBot"
+    }
+    payload = {
+        "model": "kwaivgi/kling-v3-pro",
+        "messages": [
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ],
+        "modalities": ["video", "text"],
+        # дополнительные параметры можно добавить: длительность, соотношение сторон
+        # "duration": 5, "aspect_ratio": "16:9"
+    }
+    logging.info("KLING: отправка запроса на генерацию видео...")
+    try:
+        resp = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=300)  # до 5 минут
+        if resp.status_code == 200:
+            data = resp.json()
+            logging.info(f"KLING: ответ получен. Первые 500 символов: {json.dumps(data, ensure_ascii=False)[:500]}")
+            msg = data["choices"][0]["message"]
+            # Видео может прийти в videos или как content с URL
+            if "videos" in msg and msg["videos"]:
+                video_url = msg["videos"][0]["video_url"]["url"]
+            elif msg.get("content", "").startswith("http"):
+                video_url = msg["content"]
+            else:
+                logging.error("KLING: видео отсутствует в ответе.")
+                return None
+            # Скачиваем видео (или можно отдать URL, но лучше скачать)
+            video_data = requests.get(video_url).content
+            return video_data
+        else:
+            logging.error(f"KLING: ошибка {resp.status_code} – {resp.text[:300]}")
+            return None
+    except Exception as e:
+        logging.error(f"KLING: исключение {e}")
+        return None
+
+# ================== 5. ГЛАВНОЕ МЕНЮ ==================
 def main_menu_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(
@@ -272,7 +355,7 @@ def send_main_menu(chat_id, text="Главное меню:"):
 def back_keyboard():
     return ReplyKeyboardMarkup(resize_keyboard=True).add(KeyboardButton("🔙 Главное меню"))
 
-# ================== 5. ОБРАБОТЧИКИ ==================
+# ================== 6. ОБРАБОТЧИКИ ==================
 @bot.message_handler(commands=['start'])
 def start(message):
     user_state[message.chat.id] = None
@@ -300,7 +383,9 @@ def menu_edit_photo(message):
 
 @bot.message_handler(func=lambda m: m.text == "🎥 Создать видео")
 def menu_video(message):
-    bot.send_message(message.chat.id, "🎥 Функция создания видео пока в разработке.", reply_markup=back_keyboard())
+    user_state[message.chat.id] = "awaiting_video_prompt"
+    bot.send_message(message.chat.id, "🎬 Введи описание для видео.\nПример: Кот играет с клубком, реалистичное видео 5 секунд.",
+                     reply_markup=back_keyboard())
 
 @bot.message_handler(func=lambda m: m.text == "💬 Спросить (чат)")
 def menu_chat(message):
@@ -336,7 +421,6 @@ def select_edit_model(call):
         user_edit_model[chat_id] = 'flash'
         bot.answer_callback_query(call.id, "Выбрана Gemini Flash 3.1")
     bot.delete_message(chat_id, call.message.message_id)
-    # Спрашиваем про лицо
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("🔒 Сохранить лицо", callback_data="face_keep"),
@@ -357,7 +441,7 @@ def select_face_mode(call):
     user_state[chat_id] = "awaiting_photo"
     bot.send_message(chat_id, "📸 Загрузи фото, которое нужно отредактировать.", reply_markup=back_keyboard())
 
-# Генерация промта
+# Генерация изображений (промт)
 @bot.message_handler(func=lambda m: user_state.get(m.chat.id) == "awaiting_generate_prompt")
 def handle_generate_prompt(message):
     chat_id = message.chat.id
@@ -444,7 +528,6 @@ def handle_awaiting_prompt(message):
     face_mode = user_face_mode.pop(chat_id, 'full_edit')
     user_state[chat_id] = None
 
-    # Инструкция сохранения лица
     if face_mode == 'keep_face':
         prompt = "Keep the face and facial features completely unchanged. Do not modify the face. Only apply the following changes: " + prompt
 
@@ -454,105 +537,17 @@ def handle_awaiting_prompt(message):
     if model == 'pro':
         img_data, text = edit_image_pro(prompt, photo_base64)
         model_used = "Nano Banana Pro"
-    else:
+        if not img_data:   # fallback to Flash 2.5
+            logging.warning("PRO не дала изображения, пробую FLASH 2.5.")
+            img_data, text = edit_image_flash_25(prompt, photo_base64)
+            model_used = "Gemini Flash 2.5 (запасной)"
+    else:  # flash 3.1
         img_data, text = edit_image_flash(prompt, photo_base64)
         model_used = "Gemini Flash 3.1"
-
-    # Fallback на старую Flash 2.5, если новая не дала изображения
-    if not img_data and model == 'flash':
-        logging.warning("FLASH 3.1 не дала изображения, пробую FLASH 2.5.")
-        # Временно заменяем модель на 2.5
-        old_model = "google/gemini-2.5-flash-image"
-        headers = {
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://t.me/Jastick_bot",
-            "X-Title": "TelegramBot"
-        }
-        payload = {
-            "model": old_model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{photo_base64}"}}
-                    ]
-                }
-            ],
-            "modalities": ["image", "text"]
-        }
-        try:
-            resp = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
-            if resp.status_code == 200:
-                data = resp.json()
-                msg = data["choices"][0]["message"]
-                if "images" in msg and msg["images"]:
-                    img_url = msg["images"][0]["image_url"]["url"]
-                elif msg.get("content", "").startswith("data:image/"):
-                    img_url = msg["content"]
-                else:
-                    img_url = None
-                if img_url:
-                    if img_url.startswith("data:image/"):
-                        img_data = base64.b64decode(img_url.split(",", 1)[1])
-                    else:
-                        img_data = requests.get(img_url).content
-            else:
-                img_data = None
-        except:
-            img_data = None
-        model_used = "Gemini Flash 2.5 (запасной)"
-
-    # Fallback на Flash 2.5, если Pro не дала изображения (уже было ранее, но теперь ещё и для новой Flash)
-    if not img_data and model == 'pro':
-        logging.warning("PRO не дала изображения, пробую FLASH 2.5.")
-        img_data, text = edit_image_flash(prompt, photo_base64)  # здесь edit_image_flash всё ещё 3.1, поэтому лучше явно вызвать 2.5
-        # На самом деле edit_image_flash сейчас указывает на 3.1, что может опять не сработать.
-        # Поэтому лучше внутри этого блока также использовать проверенную 2.5.
-        # Для простоты, мы можем здесь вызвать отдельную функцию или напрямую запрос к 2.5.
-        # Но так как edit_image_flash теперь 3.1, мы продублируем запрос к 2.5.
-        old_model = "google/gemini-2.5-flash-image"
-        headers = {
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://t.me/Jastick_bot",
-            "X-Title": "TelegramBot"
-        }
-        payload = {
-            "model": old_model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{photo_base64}"}}
-                    ]
-                }
-            ],
-            "modalities": ["image", "text"]
-        }
-        try:
-            resp = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
-            if resp.status_code == 200:
-                data = resp.json()
-                msg = data["choices"][0]["message"]
-                if "images" in msg and msg["images"]:
-                    img_url = msg["images"][0]["image_url"]["url"]
-                elif msg.get("content", "").startswith("data:image/"):
-                    img_url = msg["content"]
-                else:
-                    img_url = None
-                if img_url:
-                    if img_url.startswith("data:image/"):
-                        img_data = base64.b64decode(img_url.split(",", 1)[1])
-                    else:
-                        img_data = requests.get(img_url).content
-            else:
-                img_data = None
-        except:
-            img_data = None
-        model_used = "Gemini Flash 2.5 (запасной)"
+        if not img_data:   # fallback to 2.5
+            logging.warning("FLASH 3.1 не дала изображения, пробую FLASH 2.5.")
+            img_data, text = edit_image_flash_25(prompt, photo_base64)
+            model_used = "Gemini Flash 2.5 (запасной)"
 
     try:
         bot.delete_message(chat_id, waiting.message_id)
@@ -578,13 +573,39 @@ def handle_awaiting_prompt(message):
         bot.send_message(chat_id, "❌ Не удалось отредактировать изображение.")
     send_main_menu(chat_id)
 
+# Обработка промта для видео
+@bot.message_handler(func=lambda m: user_state.get(m.chat.id) == "awaiting_video_prompt")
+def handle_video_prompt(message):
+    chat_id = message.chat.id
+    prompt = message.text
+    user_state[chat_id] = None
+
+    waiting = bot.send_message(chat_id, "🎬 Генерирую видео... Это может занять до 5 минут. Пожалуйста, подождите.")
+    video_data = generate_video_kling(prompt)
+
+    try:
+        bot.delete_message(chat_id, waiting.message_id)
+    except:
+        pass
+
+    if video_data:
+        # Отправляем как видео (Telegram Bot API поддерживает send_video)
+        try:
+            bot.send_video(chat_id, video_data, caption="✅ Ваше видео готово!")
+        except Exception as e:
+            logging.error(f"Ошибка отправки видео: {e}")
+            bot.send_document(chat_id, video_data, caption="✅ Видео (как файл)")
+    else:
+        bot.send_message(chat_id, "❌ Не удалось создать видео. Возможно, модель временно недоступна.")
+    send_main_menu(chat_id)
+
 # Чат
 @bot.message_handler(func=lambda m: True, content_types=['text'])
 def handle_text_chat(message):
     if message.text.startswith('/'):
         return
     state = user_state.get(message.chat.id)
-    if state in ["awaiting_prompt", "awaiting_generate_prompt", "awaiting_photo"]:
+    if state in ["awaiting_prompt", "awaiting_generate_prompt", "awaiting_photo", "awaiting_video_prompt"]:
         return
     reply = ask_openrouter_text(message.text)
     bot.send_message(message.chat.id, reply, reply_markup=back_keyboard())
@@ -594,7 +615,7 @@ def handle_text_chat(message):
 def handle_other(message):
     bot.send_message(message.chat.id, "Пожалуйста, используй кнопки меню.")
 
-# ================== 6. ЗАПУСК ==================
+# ================== 7. ЗАПУСК ==================
 def run_bot():
     logging.info("✅ Бот запущен и слушает сообщения...")
     try:
