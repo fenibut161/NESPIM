@@ -22,7 +22,7 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 GIGACHAT_AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY")
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_VIDEO_URL = "https://openrouter.ai/api/v1/videos"  # правильный эндпоинт
+OPENROUTER_VIDEO_URL = "https://openrouter.ai/api/v1/videos"
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 bot.request_timeout = 120
@@ -228,7 +228,7 @@ def edit_image_flash_25(prompt, image_base64):
     except:
         return None, None
 
-# ================== 4. ГЕНЕРАЦИЯ ВИДЕО (ИСПРАВЛЕННАЯ) ==================
+# ================== 4. ГЕНЕРАЦИЯ ВИДЕО (АСИНХРОННАЯ) ==================
 def compress_image_if_needed(b64_str, max_size=(640, 640), quality=80):
     try:
         img_data = base64.b64decode(b64_str)
@@ -241,12 +241,12 @@ def compress_image_if_needed(b64_str, max_size=(640, 640), quality=80):
         logging.error(f"Ошибка сжатия изображения: {e}")
         return b64_str
 
-def poll_video_task(polling_url, headers, max_attempts=60, interval=15):
+def poll_video_task(polling_url, headers, chat_id, max_attempts=80, interval=10):
     """
-    Опрос статуса генерации видео.
-    max_attempts=60, interval=15 => до 15 минут ожидания.
+    Опрос статуса генерации видео в фоновом потоке.
+    При завершении отправляет видео или сообщение об ошибке.
     """
-    logging.info(f"Начинаю опрос по URL: {polling_url}")
+    logging.info(f"Начинаю опрос по URL: {polling_url} для chat_id={chat_id}")
     for attempt in range(1, max_attempts + 1):
         time.sleep(interval)
         try:
@@ -265,7 +265,12 @@ def poll_video_task(polling_url, headers, max_attempts=60, interval=15):
                     video_response = requests.get(content_url, headers=headers, timeout=60)
                     if video_response.status_code == 200 and len(video_response.content) > 500:
                         logging.info(f"Видео скачано, размер {len(video_response.content)} байт")
-                        return video_response.content
+                        # Отправляем видео пользователю
+                        try:
+                            bot.send_video(chat_id, video_response.content, caption="✅ Ваше видео готово!")
+                        except Exception as e:
+                            logging.error(f"Ошибка отправки видео: {e}")
+                            bot.send_document(chat_id, video_response.content, caption="✅ Видео (как файл)")
                     else:
                         logging.error(f"Не удалось скачать видео через /content: "
                                       f"статус {video_response.status_code}, "
@@ -277,24 +282,33 @@ def poll_video_task(polling_url, headers, max_attempts=60, interval=15):
                             logging.info(f"Пробую скачать по unsigned_url: {video_url}")
                             video_response = requests.get(video_url, headers=headers, timeout=60)
                             if video_response.status_code == 200 and len(video_response.content) > 500:
-                                return video_response.content
-                        return None
+                                try:
+                                    bot.send_video(chat_id, video_response.content, caption="✅ Ваше видео готово!")
+                                except Exception as e:
+                                    logging.error(f"Ошибка отправки видео: {e}")
+                                    bot.send_document(chat_id, video_response.content, caption="✅ Видео (как файл)")
+                            else:
+                                bot.send_message(chat_id, "❌ Не удалось скачать готовое видео.")
+                        else:
+                            bot.send_message(chat_id, "❌ Не удалось получить ссылку на видео.")
+                    return  # завершаем поток
                 elif status in ["failed", "cancelled", "expired"]:
                     logging.error(f"Задача завершилась с ошибкой: {data}")
-                    return None
+                    bot.send_message(chat_id, f"❌ Ошибка генерации видео: {status}")
+                    return
                 else:
                     logging.info(f"Статус: {status}, ожидаем завершения...")
             else:
                 logging.error(f"Опрос: статус {resp.status_code}, ответ {resp.text[:200]}")
         except Exception as e:
             logging.error(f"Ошибка опроса: {e}")
-    logging.error("Истекло время ожидания (15 минут)")
-    return None
+    # Если вышли по таймауту
+    logging.error("Истекло время ожидания (более 20 минут)")
+    bot.send_message(chat_id, "❌ Время ожидания истекло. Попробуйте позже.")
 
-def generate_video_seedance(prompt, first_frame_b64=None, last_frame_b64=None):
+def generate_video_seedance_async(chat_id, prompt, first_frame_b64=None, last_frame_b64=None):
     """
-    Генерация видео через OpenRouter Video API.
-    Сначала пробуем bytedance/seedance-2.0, при ошибке fallback на seedance-2.0-fast.
+    Запускает генерацию видео в фоновом потоке.
     """
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
@@ -305,12 +319,13 @@ def generate_video_seedance(prompt, first_frame_b64=None, last_frame_b64=None):
     
     models_to_try = ["bytedance/seedance-2.0", "bytedance/seedance-2.0-fast"]
     
+    # Первый запрос — пробуем модели по очереди
     for model in models_to_try:
-        logging.info(f"Пробую модель: {model}")
+        logging.info(f"Пробую модель: {model} для chat_id={chat_id}")
         payload = {
             "model": model,
             "prompt": prompt,
-            "duration": 4,               # 4 секунды — безопаснее
+            "duration": 4,
             "resolution": "480p",
             "aspect_ratio": "16:9"
         }
@@ -353,32 +368,38 @@ def generate_video_seedance(prompt, first_frame_b64=None, last_frame_b64=None):
             if resp.status_code in (200, 202):
                 data = resp.json()
                 if "polling_url" in data:
-                    result = poll_video_task(data["polling_url"], headers)
-                    if result:
-                        return result
-                    else:
-                        logging.warning(f"Не удалось получить видео для модели {model}, пробуем следующую...")
-                        continue  # пробуем следующую модель
+                    # Запускаем фоновый опрос
+                    Thread(target=poll_video_task, args=(data["polling_url"], headers, chat_id), daemon=True).start()
+                    return True  # Задача запущена
                 else:
                     # Возможно, видео пришло сразу
                     if "unsigned_urls" in data and data["unsigned_urls"]:
                         video_url = data["unsigned_urls"][0]
                         video_data = requests.get(video_url, headers=headers, timeout=60)
                         if video_data.status_code == 200 and len(video_data.content) > 500:
-                            return video_data.content
+                            try:
+                                bot.send_video(chat_id, video_data.content, caption="✅ Ваше видео готово!")
+                            except Exception as e:
+                                logging.error(f"Ошибка отправки видео: {e}")
+                                bot.send_document(chat_id, video_data.content, caption="✅ Видео (как файл)")
+                            return True
                     elif "b64_json" in data:
                         try:
-                            return base64.b64decode(data["b64_json"])
+                            video_data = base64.b64decode(data["b64_json"])
+                            bot.send_video(chat_id, video_data, caption="✅ Ваше видео готово!")
+                            return True
                         except:
                             pass
                     logging.error("Нет polling_url и нет готового видео в ответе")
+                    continue  # пробуем следующую модель
             else:
                 logging.error(f"Ошибка {resp.status_code}: {resp.text[:300]}")
         except Exception as e:
             logging.error(f"Исключение при запросе к {model}: {e}")
     
-    logging.error("Все модели не смогли сгенерировать видео")
-    return None
+    # Если все модели не сработали
+    bot.send_message(chat_id, "❌ Не удалось запустить генерацию видео. Попробуйте позже.")
+    return False
 
 # ================== 5. ГЛАВНОЕ МЕНЮ ==================
 def main_menu_keyboard():
@@ -670,7 +691,7 @@ def handle_video_last_frame(message):
     user_state[chat_id] = "awaiting_video_prompt"
     bot.send_message(chat_id, "Введи описание для видео:", reply_markup=back_keyboard())
 
-# ФИНАЛЬНАЯ ГЕНЕРАЦИЯ ВИДЕО
+# ФИНАЛЬНАЯ ГЕНЕРАЦИЯ ВИДЕО (АСИНХРОННАЯ)
 @bot.message_handler(func=lambda m: user_state.get(m.chat.id) == "awaiting_video_prompt")
 def handle_video_prompt(message):
     chat_id = message.chat.id
@@ -683,25 +704,11 @@ def handle_video_prompt(message):
     last_frame = user_video_frames.get(chat_id, {}).get('last')
     user_video_frames.pop(chat_id, None)
 
-    waiting = bot.send_message(chat_id, "🎬 Генерирую видео... Это может занять до 15 минут.")
+    # Отправляем сообщение о начале генерации
+    bot.send_message(chat_id, "🎬 Генерирую видео... Это может занять до 15 минут. Я пришлю его, когда оно будет готово.")
 
-    video_data = generate_video_seedance(prompt, first_frame, last_frame)
-
-    try:
-        bot.delete_message(chat_id, waiting.message_id)
-    except:
-        pass
-
-    if video_data and len(video_data) > 500:
-        try:
-            bot.send_video(chat_id, video_data, caption="✅ Ваше видео готово!")
-        except Exception as e:
-            logging.error(f"Ошибка отправки видео: {e}")
-            bot.send_document(chat_id, video_data, caption="✅ Видео (как файл)")
-    else:
-        logging.error(f"video_data пустое или слишком маленькое: {len(video_data) if video_data else 0} байт")
-        bot.send_message(chat_id, "❌ Не удалось создать видео. Попробуйте позже или измените описание.")
-    send_main_menu(chat_id)
+    # Запускаем асинхронную генерацию
+    Thread(target=generate_video_seedance_async, args=(chat_id, prompt, first_frame, last_frame), daemon=True).start()
 
 # Чат
 @bot.message_handler(func=lambda m: True, content_types=['text'])
