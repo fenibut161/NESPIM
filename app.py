@@ -21,9 +21,8 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 GIGACHAT_AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY")
 
-# ИСПРАВЛЕННЫЙ URL ДЛЯ ГЕНЕРАЦИИ ВИДЕО
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_VIDEO_URL = "https://openrouter.ai/api/v1/video"          # правильный эндпоинт
+OPENROUTER_VIDEO_URL = "https://openrouter.ai/api/v1/video/generations"  # правильный эндпоинт
 OPENROUTER_TASK_URL = "https://openrouter.ai/api/v1/task"
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
@@ -150,7 +149,7 @@ def ask_openrouter_text(prompt):
     except Exception as e:
         return f"⚠️ Ошибка соединения: {e}"
 
-# ================== 3. РЕДАКТИРОВАНИЕ ИЗОБРАЖЕНИЙ (без изменений) ==================
+# ================== 3. РЕДАКТИРОВАНИЕ ИЗОБРАЖЕНИЙ ==================
 def edit_image_pro(prompt, image_base64):
     short = prompt.split('.')[0].strip()[:300]
     headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
@@ -239,12 +238,8 @@ def edit_image_flash_25(prompt, image_base64):
     except:
         return None, None
 
-# ================== 4. ГЕНЕРАЦИЯ ВИДЕО (ИСПРАВЛЕННАЯ) ==================
+# ================== 4. ГЕНЕРАЦИЯ ВИДЕО (С ИСПРАВЛЕННЫМ URL) ==================
 def compress_image_if_needed(b64_str, max_size=(640, 640), quality=80):
-    """
-    Сжимает изображение, если оно слишком большое (опционально).
-    Можно использовать для уменьшения размера base64.
-    """
     try:
         img_data = base64.b64decode(b64_str)
         img = Image.open(io.BytesIO(img_data))
@@ -254,12 +249,9 @@ def compress_image_if_needed(b64_str, max_size=(640, 640), quality=80):
         return base64.b64encode(buf.getvalue()).decode()
     except Exception as e:
         logging.error(f"Ошибка сжатия изображения: {e}")
-        return b64_str  # возвращаем как есть
+        return b64_str
 
 def generate_video_seedance(prompt, first_frame_b64=None, last_frame_b64=None):
-    """
-    Генерация видео через OpenRouter (Seedance 2.0) с исправленным URL и увеличенными таймаутами.
-    """
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
@@ -273,7 +265,6 @@ def generate_video_seedance(prompt, first_frame_b64=None, last_frame_b64=None):
         "size": "480p",
         "output_format": "mp4"
     }
-    # Если переданы кадры, сжимаем их для уменьшения размера (опционально)
     if first_frame_b64:
         compressed_first = compress_image_if_needed(first_frame_b64)
         payload["image"] = f"data:image/jpeg;base64,{compressed_first}"
@@ -283,14 +274,13 @@ def generate_video_seedance(prompt, first_frame_b64=None, last_frame_b64=None):
 
     logging.info("=== ЗАПРОС К SEEDANCE 2.0 ===")
     logging.info(f"URL: {OPENROUTER_VIDEO_URL}")
-    # Безопасное логирование (не выводим base64 целиком)
     safe_payload = {k: (f"<base64 len={len(v)}>" if 'base64' in str(v) else v) for k, v in payload.items()}
     logging.info(f"Payload: {json.dumps(safe_payload, ensure_ascii=False)}")
 
     try:
-        resp = requests.post(OPENROUTER_VIDEO_URL, json=payload, headers=headers, timeout=600)  # увеличенный таймаут
+        resp = requests.post(OPENROUTER_VIDEO_URL, json=payload, headers=headers, timeout=600)
         logging.info(f"Seedance 2.0: HTTP {resp.status_code}")
-        logging.info(f"Seedance 2.0: полный ответ: {resp.text}")  # полный лог для диагностики
+        logging.info(f"Seedance 2.0: полный ответ: {resp.text}")
 
         if resp.status_code == 200:
             data = resp.json()
@@ -304,7 +294,7 @@ def generate_video_seedance(prompt, first_frame_b64=None, last_frame_b64=None):
                     return requests.get(item["url"]).content
             if "task_id" in data:
                 logging.info(f"Получен task_id: {data['task_id']}, начинаю polling")
-                return poll_video_task(data["task_id"], headers, max_attempts=40, interval=15)  # увеличенные параметры
+                return poll_video_task(data["task_id"], headers, max_attempts=40, interval=15)
             logging.error("Seedance: ответ не содержит data или task_id")
         else:
             logging.error(f"Seedance: ошибка {resp.status_code} – {resp.text[:500]}")
@@ -314,7 +304,6 @@ def generate_video_seedance(prompt, first_frame_b64=None, last_frame_b64=None):
         return None
 
 def poll_video_task(task_id, headers, max_attempts=40, interval=15):
-    """Опрос статуса задачи генерации видео с увеличенным временем ожидания."""
     url = f"{OPENROUTER_TASK_URL}/{task_id}"
     logging.info(f"Начинаю опрос задачи {task_id}")
     for attempt in range(1, max_attempts + 1):
