@@ -22,6 +22,7 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 GIGACHAT_AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY")
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_VIDEO_URL = "https://openrouter.ai/api/v1/video/generations"
 OPENROUTER_TASK_URL = "https://openrouter.ai/api/v1/task"
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
@@ -152,13 +153,10 @@ def ask_openrouter_text(prompt):
 
 # ================== 3. РЕДАКТИРОВАНИЕ ИЗОБРАЖЕНИЙ ==================
 def edit_image_pro(prompt, image_base64):
-    """Редактирование через Google Gemini 3 Pro Image Preview с авто‑сокращением промта."""
-    # Сокращаем до первого предложения (макс. 300 символов)
     short_prompt = prompt.split('.')[0].strip()
     if len(short_prompt) > 300:
         short_prompt = short_prompt[:300] + "..."
     logging.info(f"PRO: исходный промт длиной {len(prompt)} символов, используется: {short_prompt}")
-
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
@@ -207,7 +205,6 @@ def edit_image_pro(prompt, image_base64):
         return None, None
 
 def edit_image_flash(prompt, image_base64):
-    """Редактирование через Google Gemini 3.1 Flash Image (с fallback 2.5 внутри логики)."""
     MODEL = "google/gemini-3.1-flash-image"
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
@@ -255,7 +252,6 @@ def edit_image_flash(prompt, image_base64):
         return None, None
 
 def edit_image_flash_25(prompt, image_base64):
-    """Запасная модель Google Gemini 2.5 Flash Image."""
     MODEL = "google/gemini-2.5-flash-image"
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
@@ -297,47 +293,47 @@ def edit_image_flash_25(prompt, image_base64):
     except:
         return None, None
 
-# ================== 4. ГЕНЕРАЦИЯ ВИДЕО (ОСНОВНАЯ + FALLBACK) ==================
+# ================== 4. ГЕНЕРАЦИЯ ВИДЕО (Seedance 2.0 как основная) ==================
 def generate_video_seedance(prompt, first_frame_b64=None, last_frame_b64=None):
-    """Основная модель: ByteDance Seedance 2.0 (480p). Возвращает байты видео или None."""
+    """
+    Генерация видео через ByteDance Seedance 2.0, используя video/generations endpoint.
+    Поддерживает image-to-video с первым и последним кадром.
+    """
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
         "HTTP-Referer": "https://t.me/Jastick_bot",
         "X-Title": "TelegramBot"
     }
-    content = [{"type": "text", "text": prompt}]
-    if first_frame_b64:
-        content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{first_frame_b64}"}})
-    if last_frame_b64:
-        content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{last_frame_b64}"}})
-
     payload = {
         "model": "bytedance/seedance-2.0",
-        "messages": [{"role": "user", "content": content}],
-        "modalities": ["video", "text"],
-        "resolution": "480p"   # можно 720p или 1080p
+        "prompt": prompt,
+        "n": 1,
+        "size": "480p",               # можно изменить на 720p или 1080p
+        "output_format": "mp4"
     }
+    if first_frame_b64:
+        payload["image"] = f"data:image/jpeg;base64,{first_frame_b64}"
+    if last_frame_b64:
+        payload["last_image"] = f"data:image/jpeg;base64,{last_frame_b64}"
 
-    logging.info("Seedance 2.0: отправка запроса на генерацию видео...")
+    logging.info("Seedance 2.0: отправка запроса через video/generations...")
     try:
-        resp = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
+        resp = requests.post(OPENROUTER_VIDEO_URL, json=payload, headers=headers, timeout=300)
         if resp.status_code == 200:
             data = resp.json()
             logging.info(f"Seedance 2.0: ответ: {json.dumps(data, ensure_ascii=False)[:500]}")
-            msg = data["choices"][0]["message"]
-            # Прямая ссылка?
-            if "videos" in msg and msg["videos"]:
-                video_url = msg["videos"][0]["video_url"]["url"]
-                return requests.get(video_url).content
-            elif msg.get("content", "").startswith("http"):
-                return requests.get(msg["content"]).content
-            # Задача на генерацию?
-            task_id = data.get("task_id") or msg.get("task_id")
-            if task_id:
-                logging.info(f"Seedance: task_id {task_id}, начинаю polling...")
-                return poll_video_task(task_id, headers)
-            logging.error("Seedance 2.0: видео отсутствует, task_id не найден.")
+            # Обработка ответа: может быть сразу видео или task_id
+            if "data" in data and len(data["data"]) > 0:
+                item = data["data"][0]
+                if "b64_json" in item:
+                    return base64.b64decode(item["b64_json"])
+                elif "url" in item:
+                    return requests.get(item["url"]).content
+            # Если task_id – опрашиваем
+            if "task_id" in data:
+                return poll_video_task(data["task_id"], headers)
+            logging.error("Seedance 2.0: нет ни data, ни task_id")
         else:
             logging.error(f"Seedance 2.0: ошибка {resp.status_code} – {resp.text[:300]}")
         return None
@@ -345,66 +341,7 @@ def generate_video_seedance(prompt, first_frame_b64=None, last_frame_b64=None):
         logging.error(f"Seedance 2.0: исключение {e}")
         return None
 
-def generate_video_kling(prompt, first_frame_b64=None, last_frame_b64=None):
-    """Fallback 1: Kling v3.0 Pro."""
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    content = [{"type": "text", "text": prompt}]
-    if first_frame_b64:
-        content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{first_frame_b64}"}})
-    if last_frame_b64:
-        content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{last_frame_b64}"}})
-
-    payload = {
-        "model": "kwaivgi/kling-v3-pro",
-        "messages": [{"role": "user", "content": content}],
-        "modalities": ["video", "text"]
-    }
-    try:
-        resp = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
-        if resp.status_code == 200:
-            data = resp.json()
-            msg = data["choices"][0]["message"]
-            if "videos" in msg and msg["videos"]:
-                return requests.get(msg["videos"][0]["video_url"]["url"]).content
-            elif msg.get("content", "").startswith("http"):
-                return requests.get(msg["content"]).content
-            task_id = data.get("task_id") or msg.get("task_id")
-            if task_id:
-                return poll_video_task(task_id, headers)
-        return None
-    except:
-        return None
-
-def generate_video_svd(prompt, first_frame_b64=None):
-    """Fallback 2: Stability AI Stable Video Diffusion."""
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    content = [{"type": "text", "text": prompt}]
-    if first_frame_b64:
-        content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{first_frame_b64}"}})
-
-    payload = {
-        "model": "stabilityai/stable-video-diffusion",
-        "messages": [{"role": "user", "content": content}],
-        "modalities": ["video", "text"]
-    }
-    try:
-        resp = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
-        if resp.status_code == 200:
-            msg = resp.json()["choices"][0]["message"]
-            if "videos" in msg and msg["videos"]:
-                return requests.get(msg["videos"][0]["video_url"]["url"]).content
-        return None
-    except:
-        return None
-
-def poll_video_task(task_id, headers, max_attempts=15, interval=10):
-    """Опрос статуса задачи генерации видео."""
+def poll_video_task(task_id, headers, max_attempts=20, interval=10):
     url = f"{OPENROUTER_TASK_URL}/{task_id}"
     for attempt in range(1, max_attempts+1):
         time.sleep(interval)
@@ -412,17 +349,15 @@ def poll_video_task(task_id, headers, max_attempts=15, interval=10):
             resp = requests.get(url, headers=headers, timeout=30)
             if resp.status_code == 200:
                 data = resp.json()
-                status = data.get("status", "")
-                if status == "completed":
+                if data.get("status") == "completed":
                     video_url = data.get("result", {}).get("video_url")
                     if video_url:
                         return requests.get(video_url).content
-                elif status == "failed":
+                elif data.get("status") == "failed":
                     logging.error(f"Задача {task_id} провалилась.")
                     return None
-                logging.info(f"Polling {task_id}: попытка {attempt}, статус {status}")
-        except Exception as e:
-            logging.error(f"Ошибка polling: {e}")
+        except:
+            pass
     return None
 
 # ================== 5. ГЛАВНОЕ МЕНЮ ==================
@@ -512,7 +447,6 @@ def select_edit_model(call):
         user_edit_model[chat_id] = 'flash'
         bot.answer_callback_query(call.id, "Выбрана Gemini Flash 3.1")
     bot.delete_message(chat_id, call.message.message_id)
-    # Спрашиваем про лицо
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("🔒 Сохранить лицо", callback_data="face_keep"),
@@ -533,7 +467,7 @@ def select_face_mode(call):
     user_state[chat_id] = "awaiting_photo"
     bot.send_message(chat_id, "📸 Загрузи фото, которое нужно отредактировать.", reply_markup=back_keyboard())
 
-# ================== ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЙ ==================
+# Генерация изображений
 @bot.message_handler(func=lambda m: user_state.get(m.chat.id) == "awaiting_generate_prompt")
 def handle_generate_prompt(message):
     chat_id = message.chat.id
@@ -595,7 +529,7 @@ def handle_generate_prompt(message):
         bot.send_message(chat_id, "❌ Не удалось сгенерировать изображение.")
     send_main_menu(chat_id)
 
-# ================== РЕДАКТИРОВАНИЕ ФОТО ==================
+# Редактирование фото
 @bot.message_handler(content_types=['photo'], func=lambda m: user_state.get(m.chat.id) == "awaiting_photo")
 def handle_awaiting_photo(message):
     chat_id = message.chat.id
@@ -619,25 +553,21 @@ def handle_awaiting_prompt(message):
     face_mode = user_face_mode.pop(chat_id, 'full_edit')
     user_state[chat_id] = None
 
-    # Инструкция сохранения лица
     if face_mode == 'keep_face':
         prompt = "Keep the face and facial features completely unchanged. Do not modify the face. Only apply the following changes: " + prompt
 
     waiting = bot.send_message(chat_id, "🎨 Редактирую...")
 
-    # Основная модель
     if model == 'pro':
         img_data, text = edit_image_pro(prompt, photo_base64)
         model_used = "Nano Banana Pro"
         if not img_data:
-            logging.warning("PRO не дала изображения, пробую FLASH 2.5.")
             img_data, text = edit_image_flash_25(prompt, photo_base64)
             model_used = "Gemini Flash 2.5 (запасной)"
-    else:  # flash 3.1
+    else:
         img_data, text = edit_image_flash(prompt, photo_base64)
         model_used = "Gemini Flash 3.1"
         if not img_data:
-            logging.warning("FLASH 3.1 не дала изображения, пробую FLASH 2.5.")
             img_data, text = edit_image_flash_25(prompt, photo_base64)
             model_used = "Gemini Flash 2.5 (запасной)"
 
@@ -665,7 +595,7 @@ def handle_awaiting_prompt(message):
         bot.send_message(chat_id, "❌ Не удалось отредактировать изображение.")
     send_main_menu(chat_id)
 
-# ================== ВИДЕО: ВЫБОР РЕЖИМА И ЗАГРУЗКА КАДРОВ ==================
+# ВИДЕО: выбор режима и загрузка кадров
 @bot.callback_query_handler(func=lambda call: call.data.startswith('vid_'))
 def select_video_mode(call):
     chat_id = call.message.chat.id
@@ -720,7 +650,7 @@ def handle_video_last_frame(message):
     user_state[chat_id] = "awaiting_video_prompt"
     bot.send_message(chat_id, "Введи описание для видео:", reply_markup=back_keyboard())
 
-# ================== ФИНАЛЬНАЯ ГЕНЕРАЦИЯ ВИДЕО ==================
+# ФИНАЛЬНАЯ ГЕНЕРАЦИЯ ВИДЕО (Seedance 2.0)
 @bot.message_handler(func=lambda m: user_state.get(m.chat.id) == "awaiting_video_prompt")
 def handle_video_prompt(message):
     chat_id = message.chat.id
@@ -730,16 +660,10 @@ def handle_video_prompt(message):
     waiting = bot.send_message(chat_id, "🎬 Генерирую видео... Это может занять до 3 минут.")
     first_frame = user_video_frames.get(chat_id, {}).get('first')
     last_frame = user_video_frames.get(chat_id, {}).get('last')
-    user_video_frames.pop(chat_id, None)  # очистка
+    user_video_frames.pop(chat_id, None)
 
-    # Пробуем основную модель – Seedance 2.0
+    # Генерация Seedance 2.0
     video_data = generate_video_seedance(prompt, first_frame, last_frame)
-    if not video_data:
-        logging.warning("Seedance 2.0 не дала видео, пробую Kling...")
-        video_data = generate_video_kling(prompt, first_frame, last_frame)
-    if not video_data:
-        logging.warning("Kling не дала видео, пробую SVD...")
-        video_data = generate_video_svd(prompt, first_frame)
 
     try:
         bot.delete_message(chat_id, waiting.message_id)
@@ -756,7 +680,7 @@ def handle_video_prompt(message):
         bot.send_message(chat_id, "❌ Не удалось создать видео. Попробуйте позже или измените описание.")
     send_main_menu(chat_id)
 
-# ================== ЧАТ ==================
+# Чат
 @bot.message_handler(func=lambda m: True, content_types=['text'])
 def handle_text_chat(message):
     if message.text.startswith('/'):
