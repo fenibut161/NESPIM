@@ -204,7 +204,11 @@ def edit_image_pro(prompt, image_base64):
         return None, None
 
 def edit_image_flash(prompt, image_base64):
-    """Редактирование через Google Gemini 3.1 Flash Image (улучшенная)."""
+    """
+    Редактирование через Google Gemini 3.1 Flash Image.
+    Подробное логирование для диагностики.
+    """
+    MODEL = "google/gemini-3.1-flash-image"
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
@@ -212,7 +216,7 @@ def edit_image_flash(prompt, image_base64):
         "X-Title": "TelegramBot"
     }
     payload = {
-        "model": "google/gemini-3.1-flash-image",
+        "model": MODEL,
         "messages": [
             {
                 "role": "user",
@@ -225,27 +229,30 @@ def edit_image_flash(prompt, image_base64):
         "modalities": ["image", "text"]
     }
     try:
+        logging.info(f"FLASH ({MODEL}): отправка запроса...")
         resp = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
+        logging.info(f"FLASH ({MODEL}): статус ответа {resp.status_code}")
         if resp.status_code == 200:
             data = resp.json()
             msg = data["choices"][0]["message"]
-            logging.info(f"FLASH 3.1: ответ получен. Содержимое: {json.dumps(msg, ensure_ascii=False)[:300]}")
+            logging.info(f"FLASH ({MODEL}): ответ получен. Первые 500 символов: {json.dumps(msg, ensure_ascii=False)[:500]}")
             if "images" in msg and msg["images"]:
                 img_url = msg["images"][0]["image_url"]["url"]
             elif msg.get("content", "").startswith("data:image/"):
                 img_url = msg["content"]
             else:
-                logging.error("FLASH 3.1: изображение отсутствует.")
+                logging.error(f"FLASH ({MODEL}): изображение отсутствует, возможно текст.")
                 return None, msg.get("content")
+            # Обрабатываем URL
             if img_url.startswith("data:image/"):
                 return base64.b64decode(img_url.split(",", 1)[1]), None
             else:
                 return requests.get(img_url).content, None
         else:
-            logging.error(f"FLASH 3.1: ошибка {resp.status_code} – {resp.text[:300]}")
+            logging.error(f"FLASH ({MODEL}): ошибка API {resp.status_code} – {resp.text[:300]}")
             return None, None
     except Exception as e:
-        logging.error(f"FLASH 3.1: исключение {e}")
+        logging.error(f"FLASH ({MODEL}): исключение {e}")
         return None, None
 
 # ================== 4. ГЛАВНОЕ МЕНЮ ==================
@@ -327,9 +334,9 @@ def select_edit_model(call):
         bot.answer_callback_query(call.id, "Выбрана Nano Banana Pro")
     else:
         user_edit_model[chat_id] = 'flash'
-        bot.answer_callback_query(call.id, "Выбрана Gemini Flash")
+        bot.answer_callback_query(call.id, "Выбрана Gemini Flash 3.1")
     bot.delete_message(chat_id, call.message.message_id)
-    # Теперь спрашиваем про лицо
+    # Спрашиваем про лицо
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("🔒 Сохранить лицо", callback_data="face_keep"),
@@ -437,7 +444,7 @@ def handle_awaiting_prompt(message):
     face_mode = user_face_mode.pop(chat_id, 'full_edit')
     user_state[chat_id] = None
 
-    # Добавляем инструкцию сохранения лица
+    # Инструкция сохранения лица
     if face_mode == 'keep_face':
         prompt = "Keep the face and facial features completely unchanged. Do not modify the face. Only apply the following changes: " + prompt
 
@@ -449,13 +456,103 @@ def handle_awaiting_prompt(message):
         model_used = "Nano Banana Pro"
     else:
         img_data, text = edit_image_flash(prompt, photo_base64)
-        model_used = "Gemini Flash"
+        model_used = "Gemini Flash 3.1"
 
-    # Fallback на Flash, если Pro не дала изображения
+    # Fallback на старую Flash 2.5, если новая не дала изображения
+    if not img_data and model == 'flash':
+        logging.warning("FLASH 3.1 не дала изображения, пробую FLASH 2.5.")
+        # Временно заменяем модель на 2.5
+        old_model = "google/gemini-2.5-flash-image"
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://t.me/Jastick_bot",
+            "X-Title": "TelegramBot"
+        }
+        payload = {
+            "model": old_model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{photo_base64}"}}
+                    ]
+                }
+            ],
+            "modalities": ["image", "text"]
+        }
+        try:
+            resp = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
+            if resp.status_code == 200:
+                data = resp.json()
+                msg = data["choices"][0]["message"]
+                if "images" in msg and msg["images"]:
+                    img_url = msg["images"][0]["image_url"]["url"]
+                elif msg.get("content", "").startswith("data:image/"):
+                    img_url = msg["content"]
+                else:
+                    img_url = None
+                if img_url:
+                    if img_url.startswith("data:image/"):
+                        img_data = base64.b64decode(img_url.split(",", 1)[1])
+                    else:
+                        img_data = requests.get(img_url).content
+            else:
+                img_data = None
+        except:
+            img_data = None
+        model_used = "Gemini Flash 2.5 (запасной)"
+
+    # Fallback на Flash 2.5, если Pro не дала изображения (уже было ранее, но теперь ещё и для новой Flash)
     if not img_data and model == 'pro':
-        logging.warning("PRO не дала изображения, пробую FLASH.")
-        img_data, text = edit_image_flash(prompt, photo_base64)
-        model_used = "Gemini Flash (запасной)"
+        logging.warning("PRO не дала изображения, пробую FLASH 2.5.")
+        img_data, text = edit_image_flash(prompt, photo_base64)  # здесь edit_image_flash всё ещё 3.1, поэтому лучше явно вызвать 2.5
+        # На самом деле edit_image_flash сейчас указывает на 3.1, что может опять не сработать.
+        # Поэтому лучше внутри этого блока также использовать проверенную 2.5.
+        # Для простоты, мы можем здесь вызвать отдельную функцию или напрямую запрос к 2.5.
+        # Но так как edit_image_flash теперь 3.1, мы продублируем запрос к 2.5.
+        old_model = "google/gemini-2.5-flash-image"
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://t.me/Jastick_bot",
+            "X-Title": "TelegramBot"
+        }
+        payload = {
+            "model": old_model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{photo_base64}"}}
+                    ]
+                }
+            ],
+            "modalities": ["image", "text"]
+        }
+        try:
+            resp = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
+            if resp.status_code == 200:
+                data = resp.json()
+                msg = data["choices"][0]["message"]
+                if "images" in msg and msg["images"]:
+                    img_url = msg["images"][0]["image_url"]["url"]
+                elif msg.get("content", "").startswith("data:image/"):
+                    img_url = msg["content"]
+                else:
+                    img_url = None
+                if img_url:
+                    if img_url.startswith("data:image/"):
+                        img_data = base64.b64decode(img_url.split(",", 1)[1])
+                    else:
+                        img_data = requests.get(img_url).content
+            else:
+                img_data = None
+        except:
+            img_data = None
+        model_used = "Gemini Flash 2.5 (запасной)"
 
     try:
         bot.delete_message(chat_id, waiting.message_id)
