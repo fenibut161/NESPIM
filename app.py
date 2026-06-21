@@ -229,7 +229,7 @@ def edit_image_flash_25(prompt, image_base64):
     except:
         return None, None
 
-# ================== 4. ГЕНЕРАЦИЯ ВИДЕО (с расширенной диагностикой) ==================
+# ================== 4. ГЕНЕРАЦИЯ ВИДЕО (с улучшенной обработкой ошибок) ==================
 def compress_image_if_needed(b64_str, max_size=(640, 640), quality=80):
     try:
         img_data = base64.b64decode(b64_str)
@@ -338,6 +338,18 @@ def poll_video_task(polling_url, headers, chat_id, max_attempts=90, interval=10)
 
     bot.send_message(chat_id, "❌ Время ожидания истекло (более 15 минут).")
 
+def _handle_video_error(chat_id, status_code, error_body):
+    """Отправляет пользователю понятное сообщение об ошибке."""
+    if status_code == 400 and "InputImageSensitiveContentDetected" in error_body:
+        bot.send_message(chat_id, "❌ Модель отклонила изображение: на нём обнаружено лицо реального человека. "
+                                   "Попробуйте использовать изображение без реальных людей.")
+        return
+    # Общее сообщение
+    err_msg = f"❌ Не удалось запустить генерацию видео. Код ошибки: {status_code}"
+    if error_body:
+        err_msg += f" ({error_body[:200]})"
+    bot.send_message(chat_id, err_msg)
+
 def generate_video_seedance_async(chat_id, prompt, first_frame_b64=None, last_frame_b64=None):
     params = user_video_params.get(chat_id, {})
     duration = params.get('duration', 5)
@@ -351,8 +363,6 @@ def generate_video_seedance_async(chat_id, prompt, first_frame_b64=None, last_fr
         "X-Title": "TelegramBot"
     }
     models_to_try = ["bytedance/seedance-2.0", "bytedance/seedance-2.0-fast"]
-    last_error_code = None
-    last_error_body = ""
 
     for model in models_to_try:
         logging.info(f"Пробую модель {model} для chat_id={chat_id} с параметрами: duration={duration}, resolution={resolution}, audio={audio}")
@@ -395,10 +405,12 @@ def generate_video_seedance_async(chat_id, prompt, first_frame_b64=None, last_fr
             logging.info(f"{model}: HTTP {resp.status_code}")
             logging.info(f"{model}: ответ: {resp.text[:500]}")
 
-            last_error_code = resp.status_code
-            last_error_body = resp.text[:300]
-
             if resp.status_code not in (200, 202):
+                # Проверим на специфическую ошибку контента
+                if resp.status_code == 400 and "InputImageSensitiveContentDetected" in resp.text:
+                    _handle_video_error(chat_id, resp.status_code, resp.text)
+                    return False
+                # Иначе просто запишем и попробуем следующую модель
                 logging.error(f"Ошибка {resp.status_code}: {resp.text[:300]}")
                 continue
 
@@ -430,17 +442,9 @@ def generate_video_seedance_async(chat_id, prompt, first_frame_b64=None, last_fr
 
         except Exception as e:
             logging.error(f"Исключение при запросе к {model}: {e}")
-            last_error_code = -1
-            last_error_body = str(e)
 
-    # Исчерпали все модели – отправляем информативное сообщение
-    err_msg = "❌ Не удалось запустить генерацию видео."
-    if last_error_code:
-        err_msg += f" Код ошибки: {last_error_code}"
-        if last_error_body:
-            err_msg += f" ({last_error_body[:200]})"
-    logging.error(err_msg)
-    bot.send_message(chat_id, err_msg)
+    # Если все модели провалились, но специфическая ошибка не сработала, показываем общую
+    _handle_video_error(chat_id, 0, "Все доступные видеомодели не смогли обработать запрос.")
     return False
 
 # ================== 5. КЛАВИАТУРЫ ДЛЯ ПАРАМЕТРОВ ==================
@@ -812,7 +816,7 @@ def handle_awaiting_prompt(message):
         bot.send_message(chat_id, "❌ Не удалось отредактировать изображение.")
     send_main_menu(chat_id)
 
-# --- ФИНАЛЬНАЯ ГЕНЕРАЦИЯ ВИДЕО (с улучшенной диагностикой) ---
+# --- ФИНАЛЬНАЯ ГЕНЕРАЦИЯ ВИДЕО ---
 @bot.message_handler(func=lambda m: user_state.get(m.chat.id) == "awaiting_video_prompt")
 def handle_video_prompt(message):
     chat_id = message.chat.id
