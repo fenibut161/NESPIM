@@ -57,13 +57,13 @@ VIDEO_MODEL_FEATURES = {
     'kwaivgi/kling-v3-pro': {'audio': True, 'resolution': True},
 }
 
-# Пакеты кредитов (цены в ЗВЕЗДАХ)
+# Пакеты кредитов (цены в ЗВЕЗДАХ, с маржой ~125%)
 PACKAGES = {
-    'start': {'name': 'Старт', 'credits': 50, 'price': 50,
+    'start': {'name': 'Старт', 'credits': 50, 'price': 250,
               'desc': '50 кредитов на любые операции (изображения, фото, видео)'},
-    'optima': {'name': 'Оптима', 'credits': 150, 'price': 120,
+    'optima': {'name': 'Оптима', 'credits': 150, 'price': 625,
                'desc': '150 кредитов (выгоднее)'},
-    'maxi': {'name': 'Макси', 'credits': 400, 'price': 300,
+    'maxi': {'name': 'Макси', 'credits': 400, 'price': 1500,
              'desc': '400 кредитов (максимальная выгода)'},
 }
 
@@ -631,8 +631,168 @@ def back_to_main(message):
     user_video_model.pop(message.chat.id, None)
     send_main_menu(message.chat.id)
 
-# Колбэки выбора видеомодели и параметров (без изменений, вставьте из предыдущей полной версии)
-# ... все колбэки vid_dur_, vid_res_, vid_aspect_, vid_audio_, vid_params_done, vmodel_, vid_text, vid_image
+# Колбэки выбора видеомодели и параметров
+@bot.callback_query_handler(func=lambda call: call.data.startswith('vmodel_'))
+def set_video_model(call):
+    chat_id = call.message.chat.id
+    model_key = call.data.split('_', 1)[1]
+    model_map = {
+        'seedance-2.0': 'bytedance/seedance-2.0',
+        'kling-o1': 'kwaivgi/kling-video-o1',
+        'kling-pro': 'kwaivgi/kling-v3-pro'
+    }
+    if model_key in model_map:
+        user_video_model[chat_id] = model_map[model_key]
+        bot.answer_callback_query(call.id, f"Выбрана модель: {model_key}")
+        bot.delete_message(chat_id, call.message.message_id)
+        start_video_param_selection(chat_id)
+    else:
+        bot.answer_callback_query(call.id, "Ошибка выбора модели")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('vid_dur_'))
+def set_video_duration(call):
+    chat_id = call.message.chat.id
+    duration = int(call.data.split('_')[-1])
+    user_video_params[chat_id]['duration'] = duration
+    bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=video_params_keyboard(chat_id))
+    bot.answer_callback_query(call.id, f"Длительность: {duration} сек")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('vid_res_'))
+def set_video_resolution(call):
+    chat_id = call.message.chat.id
+    resolution = call.data.split('_')[-1]
+    user_video_params[chat_id]['resolution'] = resolution
+    bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=video_params_keyboard(chat_id))
+    bot.answer_callback_query(call.id, f"Разрешение: {resolution}")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('vid_aspect_'))
+def set_video_aspect(call):
+    chat_id = call.message.chat.id
+    aspect = call.data.split('_', 2)[2].replace('_', ':')
+    user_video_params[chat_id]['aspect_ratio'] = aspect
+    bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=video_params_keyboard(chat_id))
+    bot.answer_callback_query(call.id, f"Формат: {aspect}")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('vid_audio_'))
+def set_video_audio(call):
+    chat_id = call.message.chat.id
+    audio = call.data.split('_')[-1] == 'true'
+    user_video_params[chat_id]['audio'] = audio
+    bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=video_params_keyboard(chat_id))
+    bot.answer_callback_query(call.id, f"Звук: {'включён' if audio else 'выключен'}")
+
+@bot.callback_query_handler(func=lambda call: call.data == 'vid_params_done')
+def video_params_done(call):
+    chat_id = call.message.chat.id
+    bot.delete_message(chat_id, call.message.message_id)
+    params = user_video_params.get(chat_id, {})
+    params.setdefault('duration', 5)
+    params.setdefault('resolution', '480p')
+    params.setdefault('audio', True)
+    params.setdefault('aspect_ratio', '16:9')
+    user_video_params[chat_id] = params
+    user_state[chat_id] = "awaiting_video_prompt"
+    bot.send_message(chat_id, "✏️ Теперь введите описание (промпт) для видео:", reply_markup=back_keyboard())
+    bot.answer_callback_query(call.id)
+
+@bot.callback_query_handler(func=lambda call: call.data in ('vid_text', 'vid_image'))
+def select_video_mode(call):
+    chat_id = call.message.chat.id
+    data = call.data
+    if data == 'vid_text':
+        user_video_mode[chat_id] = 'text'
+        user_video_frames[chat_id] = {'first': None, 'last': None}
+        bot.delete_message(chat_id, call.message.message_id)
+        bot.send_message(chat_id, "🎥 Выберите видеомодель:", reply_markup=video_model_keyboard())
+    elif data == 'vid_image':
+        user_video_mode[chat_id] = 'image_one'
+        user_video_frames[chat_id] = {'first': None, 'last': None}
+        user_state[chat_id] = "awaiting_video_image_first"
+        bot.delete_message(chat_id, call.message.message_id)
+        bot.send_message(chat_id, "📸 Загрузи ПЕРВЫЙ кадр (начальное изображение):", reply_markup=back_keyboard())
+    bot.answer_callback_query(call.id)
+
+# Колбэки для выбора модели генерации изображений и редактирования
+@bot.callback_query_handler(func=lambda call: call.data.startswith('gen_'))
+def select_generate_model(call):
+    chat_id = call.message.chat.id
+    if call.data == 'gen_gigachat':
+        user_generate_model[chat_id] = 'gigachat'
+        bot.answer_callback_query(call.id, "Выбрана GigaChat")
+    else:
+        user_generate_model[chat_id] = 'nanobanana'
+        bot.answer_callback_query(call.id, "Выбрана Nano Banana Pro")
+    bot.delete_message(chat_id, call.message.message_id)
+    user_state[chat_id] = "awaiting_generate_prompt"
+    bot.send_message(chat_id, "Введи описание изображения:", reply_markup=back_keyboard())
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('edit_'))
+def select_edit_model(call):
+    chat_id = call.message.chat.id
+    if call.data == 'edit_pro':
+        user_edit_model[chat_id] = 'pro'
+        bot.answer_callback_query(call.id, "Выбрана Nano Banana Pro")
+    else:
+        user_edit_model[chat_id] = 'flash'
+        bot.answer_callback_query(call.id, "Выбрана Gemini Flash 3.1")
+    bot.delete_message(chat_id, call.message.message_id)
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("🔒 Сохранить лицо", callback_data="face_keep"),
+        InlineKeyboardButton("🎨 Полное редактирование", callback_data="face_full")
+    )
+    bot.send_message(chat_id, "Как обрабатывать лицо на фото?", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('face_'))
+def select_face_mode(call):
+    chat_id = call.message.chat.id
+    if call.data == 'face_keep':
+        user_face_mode[chat_id] = 'keep_face'
+        bot.answer_callback_query(call.id, "Лицо будет сохранено")
+    else:
+        user_face_mode[chat_id] = 'full_edit'
+        bot.answer_callback_query(call.id, "Полное редактирование")
+    bot.delete_message(chat_id, call.message.message_id)
+    user_state[chat_id] = "awaiting_photo"
+    bot.send_message(chat_id, "📸 Загрузи фото, которое нужно отредактировать.", reply_markup=back_keyboard())
+
+# Загрузка кадров для видео
+@bot.message_handler(content_types=['photo'], func=lambda m: user_state.get(m.chat.id) == "awaiting_video_image_first")
+def handle_video_first_frame(message):
+    chat_id = message.chat.id
+    file_info = bot.get_file(message.photo[-1].file_id)
+    downloaded = bot.download_file(file_info.file_path)
+    b64 = base64.b64encode(downloaded).decode('utf-8')
+    user_video_frames[chat_id]['first'] = b64
+    user_state[chat_id] = "awaiting_video_last_choice"
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("Да, загрузить второй кадр", callback_data="last_yes"),
+        InlineKeyboardButton("Нет, только первый", callback_data="last_no")
+    )
+    bot.send_message(chat_id, "Хотите задать ПОСЛЕДНИЙ кадр (конечное изображение)?", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('last_'))
+def choose_last_frame(call):
+    chat_id = call.message.chat.id
+    bot.delete_message(chat_id, call.message.message_id)
+    if call.data == 'last_yes':
+        user_state[chat_id] = "awaiting_video_image_last"
+        bot.send_message(chat_id, "📸 Загрузи ПОСЛЕДНИЙ кадр:", reply_markup=back_keyboard())
+    else:
+        user_state[chat_id] = None
+        bot.send_message(chat_id, "🎥 Выберите видеомодель:", reply_markup=video_model_keyboard())
+    bot.answer_callback_query(call.id)
+
+@bot.message_handler(content_types=['photo'], func=lambda m: user_state.get(m.chat.id) == "awaiting_video_image_last")
+def handle_video_last_frame(message):
+    chat_id = message.chat.id
+    file_info = bot.get_file(message.photo[-1].file_id)
+    downloaded = bot.download_file(file_info.file_path)
+    b64 = base64.b64encode(downloaded).decode('utf-8')
+    user_video_frames[chat_id]['last'] = b64
+    user_state[chat_id] = None
+    bot.send_message(chat_id, "🎥 Выберите видеомодель:", reply_markup=video_model_keyboard())
 
 # Генерация изображений (с проверкой кредитов для Pro)
 @bot.message_handler(func=lambda m: user_state.get(m.chat.id) == "awaiting_generate_prompt")
