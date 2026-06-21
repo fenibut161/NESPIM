@@ -27,7 +27,7 @@ GIGACHAT_AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_VIDEO_URL = "https://openrouter.ai/api/v1/videos"
 
-ADMIN_ID = 534008787          # мой Telegram ID
+ADMIN_ID = 123456789          # замени на свой Telegram ID
 DEMO_VIDEO_URL = "https://your-server.com/static/demo.mp4"   # замени на свою ссылку
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
@@ -57,21 +57,21 @@ VIDEO_MODEL_FEATURES = {
     'kwaivgi/kling-v3-pro': {'audio': True, 'resolution': True},
 }
 
-# Пакеты кредитов
+# Пакеты кредитов (цены в ЗВЕЗДАХ)
 PACKAGES = {
-    'start': {'name': 'Старт', 'credits': 50, 'price': 349,
-              'desc': '50 кредитов (изображения, редактирование, видео)'},
-    'optima': {'name': 'Оптима', 'credits': 120, 'price': 749,
-               'desc': '120 кредитов (выгоднее)'},
-    'maxi': {'name': 'Макси', 'credits': 250, 'price': 1399,
-             'desc': '250 кредитов (максимальная выгода)'},
+    'start': {'name': 'Старт', 'credits': 50, 'price': 50,
+              'desc': '50 кредитов на любые операции (изображения, фото, видео)'},
+    'optima': {'name': 'Оптима', 'credits': 150, 'price': 120,
+               'desc': '150 кредитов (выгоднее)'},
+    'maxi': {'name': 'Макси', 'credits': 400, 'price': 300,
+             'desc': '400 кредитов (максимальная выгода)'},
 }
 
 # Стоимость операций в кредитах
 CREDIT_COSTS = {
-    'image_pro': 2,           # генерация Nano Banana Pro
-    'edit_pro': 3,            # редактирование Pro
-    'video': {                # видео по длительности
+    'image_pro': 2,          # генерация Nano Banana Pro
+    'edit_pro': 3,           # редактирование Pro
+    'video': {               # видео по длительности
         5: 25,
         10: 50,
         15: 100
@@ -380,12 +380,12 @@ def generate_video_async(chat_id, prompt, first_frame_b64=None, last_frame_b64=N
                 _send_video_safe(chat_id, raw)
                 return True
         if chat_id != ADMIN_ID:
-            user_credits[chat_id] = user_credits.get(chat_id, 0) + cost
+            user_credits[chat_id] += cost
         bot.send_message(chat_id, "❌ Пустой ответ. Кредиты возвращены.")
     except Exception as e:
         logging.error(f"Video exception: {e}")
         if chat_id != ADMIN_ID:
-            user_credits[chat_id] = user_credits.get(chat_id, 0) + cost
+            user_credits[chat_id] += cost
         bot.send_message(chat_id, "❌ Ошибка связи. Кредиты возвращены.")
     return False
 
@@ -479,15 +479,15 @@ def goto_shop(call):
     bot.delete_message(call.message.chat.id, call.message.message_id)
     shop(call.message)
 
-# ================== 7. МАГАЗИН ==================
+# ================== 7. МАГАЗИН (исправлен под Telegram Stars) ==================
 @bot.message_handler(func=lambda m: m.text == "💰 Магазин")
 def shop(message):
     chat_id = message.chat.id
-    text = "🛒 *Магазин кредитов*\n1 кредит позволяет:\n• Сгенерировать изображение (Pro) — 2 кредита\n• Отредактировать фото (Pro) — 3 кредита\n• Видео 5 сек — 25 кредитов\n• Видео 10 сек — 50 кредитов\n• Видео 15 сек — 100 кредитов\n\n"
+    text = "🛒 *Магазин кредитов*\n1 кредит позволяет:\n• Генерация Pro — 2 кредита\n• Редактирование Pro — 3 кредита\n• Видео 5 сек — 25 кр., 10 сек — 50 кр., 15 сек — 100 кр.\n\nВыберите пакет:"
     markup = InlineKeyboardMarkup(row_width=1)
     for key, pkg in PACKAGES.items():
-        text += f"*{pkg['name']}*: {pkg['credits']} кредитов — {pkg['price']} руб ({pkg['desc']})\n"
-        markup.add(InlineKeyboardButton(f"Купить {pkg['name']} — {pkg['price']} руб", callback_data=f"buy_{key}"))
+        text += f"\n*{pkg['name']}*: {pkg['credits']} кредитов — {pkg['price']} ⭐️"
+        markup.add(InlineKeyboardButton(f"Купить {pkg['name']} — {pkg['price']} ⭐️", callback_data=f"buy_{key}"))
     bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('buy_'))
@@ -504,8 +504,8 @@ def initiate_payment(call):
             title=f"Пакет «{pkg['name']}»",
             description=pkg['desc'],
             provider_token="",
-            currency="RUB",
-            prices=[LabeledPrice(label=f"{pkg['credits']} кредитов", amount=pkg['price'] * 100)],
+            currency="XTR",
+            prices=[LabeledPrice(label="XTR", amount=pkg['price'])],
             start_parameter="shop",
             invoice_payload=f"package_{pkg_key}"
         )
@@ -526,6 +526,11 @@ def process_payment(message):
     if pkg:
         user_credits[chat_id] = user_credits.get(chat_id, 0) + pkg['credits']
         bot.send_message(chat_id, f"✅ Оплата прошла! Начислено {pkg['credits']} кредитов.\nБаланс: {user_credits[chat_id]} кредитов")
+
+# Обязательная команда /paysupport (правила Telegram)
+@bot.message_handler(commands=['paysupport'])
+def pay_support(message):
+    bot.send_message(message.chat.id, "Возврат средств осуществляется в течение 24 часов. Для запроса возврата свяжитесь с @Jastick_bot.")
 
 # ================== 8. АДМИН-ПАНЕЛЬ ==================
 @bot.message_handler(commands=['admin'])
@@ -626,7 +631,8 @@ def back_to_main(message):
     user_video_model.pop(message.chat.id, None)
     send_main_menu(message.chat.id)
 
-# Колбэки выбора видеомодели и параметров (без изменений, вставьте их из предыдущего кода)
+# Колбэки выбора видеомодели и параметров (без изменений, вставьте из предыдущей полной версии)
+# ... все колбэки vid_dur_, vid_res_, vid_aspect_, vid_audio_, vid_params_done, vmodel_, vid_text, vid_image
 
 # Генерация изображений (с проверкой кредитов для Pro)
 @bot.message_handler(func=lambda m: user_state.get(m.chat.id) == "awaiting_generate_prompt")
@@ -639,10 +645,10 @@ def handle_generate_prompt(message):
     if model == 'gigachat':
         waiting = bot.send_message(chat_id, "🎨 Генерирую через GigaChat...")
         img_data = generate_gigachat_image(prompt)
-    else:  # Nano Banana Pro
+    else:
         if chat_id != ADMIN_ID:
             if user_credits.get(chat_id, 0) < CREDIT_COSTS['image_pro']:
-                bot.send_message(chat_id, f"❌ Недостаточно кредитов. Нужно {CREDIT_COSTS['image_pro']} кредитов.")
+                bot.send_message(chat_id, "❌ Недостаточно кредитов. Нужно 2 кредита.")
                 send_main_menu(chat_id)
                 return
             user_credits[chat_id] -= CREDIT_COSTS['image_pro']
@@ -682,6 +688,8 @@ def handle_generate_prompt(message):
                 img_data = None
         except:
             img_data = None
+        if not img_data and chat_id != ADMIN_ID:
+            user_credits[chat_id] = user_credits.get(chat_id, 0) + CREDIT_COSTS['image_pro']  # возврат
 
     if img_data:
         try:
@@ -695,9 +703,6 @@ def handle_generate_prompt(message):
             bot.send_document(chat_id, img_data, caption="✅ Готово (файл)")
     else:
         bot.send_message(chat_id, "❌ Не удалось сгенерировать изображение.")
-        if chat_id != ADMIN_ID and model == 'nanobanana':
-            # Возвращаем кредиты при ошибке
-            user_credits[chat_id] = user_credits.get(chat_id, 0) + CREDIT_COSTS['image_pro']
     send_main_menu(chat_id)
 
 # Редактирование фото (с проверкой кредитов для Pro)
@@ -727,10 +732,9 @@ def handle_awaiting_prompt(message):
     if face_mode == 'keep_face':
         prompt = "Keep the face and facial features completely unchanged. Do not modify the face. Only apply the following changes: " + prompt
 
-    # Проверка кредитов для Pro
     if model == 'pro' and chat_id != ADMIN_ID:
         if user_credits.get(chat_id, 0) < CREDIT_COSTS['edit_pro']:
-            bot.send_message(chat_id, f"❌ Недостаточно кредитов. Нужно {CREDIT_COSTS['edit_pro']} кредитов.")
+            bot.send_message(chat_id, "❌ Недостаточно кредитов. Нужно 3 кредита.")
             send_main_menu(chat_id)
             return
         user_credits[chat_id] -= CREDIT_COSTS['edit_pro']
@@ -745,7 +749,6 @@ def handle_awaiting_prompt(message):
             img_data, text = edit_image_flash_25(prompt, photo_base64)
             model_used = "Gemini Flash 2.5 (запасной)"
             if chat_id != ADMIN_ID:
-                # Возвращаем кредиты при ошибке
                 user_credits[chat_id] = user_credits.get(chat_id, 0) + CREDIT_COSTS['edit_pro']
     else:
         img_data, text = edit_image_flash(prompt, photo_base64)
@@ -776,9 +779,6 @@ def handle_awaiting_prompt(message):
         bot.send_message(chat_id, f"⚠️ Модель вернула текстовое описание:\n\n{text[:4000]}")
     else:
         bot.send_message(chat_id, "❌ Не удалось отредактировать изображение.")
-        if chat_id != ADMIN_ID and model == 'pro':
-            # Возвращаем кредиты при ошибке
-            user_credits[chat_id] = user_credits.get(chat_id, 0) + CREDIT_COSTS['edit_pro']
     send_main_menu(chat_id)
 
 # Финальная генерация видео
