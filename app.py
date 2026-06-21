@@ -27,7 +27,7 @@ GIGACHAT_AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_VIDEO_URL = "https://openrouter.ai/api/v1/videos"
 
-ADMIN_ID = 123456789          # замени на свой Telegram ID
+ADMIN_ID = 534008787          # мой Telegram ID
 DEMO_VIDEO_URL = "https://your-server.com/static/demo.mp4"   # замени на свою ссылку
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
