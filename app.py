@@ -35,9 +35,10 @@ user_edit_model = {}
 user_face_mode = {}
 user_generate_model = {}
 user_pending_photo = {}
-user_video_mode = {}
-user_video_frames = {}
-user_video_params = {}
+user_video_mode = {}      # 'text' / 'image_one' / 'image_two'
+user_video_frames = {}    # {'first': b64, 'last': b64}
+user_video_params = {}    # duration, resolution, audio
+user_video_model = {}     # выбранная видеомодель (например 'seedance-2.0', 'wan-2.6', 'hailuo-2.3', 'kling-o1')
 
 # ================== 1. GIGACHAT ==================
 def get_gigachat_token():
@@ -229,7 +230,7 @@ def edit_image_flash_25(prompt, image_base64):
     except:
         return None, None
 
-# ================== 4. ГЕНЕРАЦИЯ ВИДЕО (с улучшенной обработкой ошибок) ==================
+# ================== 4. ГЕНЕРАЦИЯ ВИДЕО (с выбором модели) ==================
 def compress_image_if_needed(b64_str, max_size=(640, 640), quality=80):
     try:
         img_data = base64.b64decode(b64_str)
@@ -338,23 +339,12 @@ def poll_video_task(polling_url, headers, chat_id, max_attempts=90, interval=10)
 
     bot.send_message(chat_id, "❌ Время ожидания истекло (более 15 минут).")
 
-def _handle_video_error(chat_id, status_code, error_body):
-    """Отправляет пользователю понятное сообщение об ошибке."""
-    if status_code == 400 and "InputImageSensitiveContentDetected" in error_body:
-        bot.send_message(chat_id, "❌ Модель отклонила изображение: на нём обнаружено лицо реального человека. "
-                                   "Попробуйте использовать изображение без реальных людей.")
-        return
-    # Общее сообщение
-    err_msg = f"❌ Не удалось запустить генерацию видео. Код ошибки: {status_code}"
-    if error_body:
-        err_msg += f" ({error_body[:200]})"
-    bot.send_message(chat_id, err_msg)
-
 def generate_video_seedance_async(chat_id, prompt, first_frame_b64=None, last_frame_b64=None):
     params = user_video_params.get(chat_id, {})
     duration = params.get('duration', 5)
     resolution = params.get('resolution', '480p')
     audio = params.get('audio', True)
+    model_id = user_video_model.get(chat_id, 'bytedance/seedance-2.0')  # если по какой‑то причине не выбрана
 
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
@@ -362,92 +352,96 @@ def generate_video_seedance_async(chat_id, prompt, first_frame_b64=None, last_fr
         "HTTP-Referer": "https://t.me/Jastick_bot",
         "X-Title": "TelegramBot"
     }
-    models_to_try = ["bytedance/seedance-2.0", "bytedance/seedance-2.0-fast"]
 
-    for model in models_to_try:
-        logging.info(f"Пробую модель {model} для chat_id={chat_id} с параметрами: duration={duration}, resolution={resolution}, audio={audio}")
-        payload = {
-            "model": model,
-            "prompt": prompt,
-            "duration": duration,
-            "resolution": resolution,
-            "aspect_ratio": "16:9",
-            "audio": audio
-        }
+    logging.info(f"Генерация видео: model={model_id}, duration={duration}, resolution={resolution}, audio={audio}")
 
-        frame_images = []
-        if first_frame_b64:
-            compressed = compress_image_if_needed(first_frame_b64)
-            frame_images.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{compressed}"},
-                "frame_type": "first_frame"
-            })
-        if last_frame_b64:
-            compressed = compress_image_if_needed(last_frame_b64)
-            frame_images.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{compressed}"},
-                "frame_type": "last_frame"
-            })
-        if frame_images:
-            payload["frame_images"] = frame_images
+    payload = {
+        "model": model_id,
+        "prompt": prompt,
+        "duration": duration,
+        "resolution": resolution,
+        "aspect_ratio": "16:9",
+        "audio": audio
+    }
 
-        safe = {k: v for k, v in payload.items()}
-        if "frame_images" in safe:
-            safe["frame_images"] = [
-                {**item, "image_url": {"url": "<base64>"}} for item in safe["frame_images"]
-            ]
-        logging.info(f"Payload: {json.dumps(safe, ensure_ascii=False)}")
+    frame_images = []
+    if first_frame_b64:
+        compressed = compress_image_if_needed(first_frame_b64)
+        frame_images.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/jpeg;base64,{compressed}"},
+            "frame_type": "first_frame"
+        })
+    if last_frame_b64:
+        compressed = compress_image_if_needed(last_frame_b64)
+        frame_images.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/jpeg;base64,{compressed}"},
+            "frame_type": "last_frame"
+        })
+    if frame_images:
+        payload["frame_images"] = frame_images
 
-        try:
-            resp = requests.post(OPENROUTER_VIDEO_URL, json=payload, headers=headers, timeout=60)
-            logging.info(f"{model}: HTTP {resp.status_code}")
-            logging.info(f"{model}: ответ: {resp.text[:500]}")
+    # Логирование без base64
+    safe = {k: v for k, v in payload.items()}
+    if "frame_images" in safe:
+        safe["frame_images"] = [{**item, "image_url": {"url": "<base64>"}} for item in safe["frame_images"]]
+    logging.info(f"Payload: {json.dumps(safe, ensure_ascii=False)}")
 
-            if resp.status_code not in (200, 202):
-                # Проверим на специфическую ошибку контента
-                if resp.status_code == 400 and "InputImageSensitiveContentDetected" in resp.text:
-                    _handle_video_error(chat_id, resp.status_code, resp.text)
-                    return False
-                # Иначе просто запишем и попробуем следующую модель
-                logging.error(f"Ошибка {resp.status_code}: {resp.text[:300]}")
-                continue
+    try:
+        resp = requests.post(OPENROUTER_VIDEO_URL, json=payload, headers=headers, timeout=60)
+        logging.info(f"Ответ: HTTP {resp.status_code}")
+        logging.info(f"Тело: {resp.text[:500]}")
 
-            data = resp.json()
+        if resp.status_code not in (200, 202):
+            if resp.status_code == 400 and "InputImageSensitiveContentDetected" in resp.text:
+                bot.send_message(chat_id, "❌ Модель отклонила изображение из‑за политики контента (возможно, распознано лицо). Попробуйте другую модель.")
+            else:
+                bot.send_message(chat_id, f"❌ Ошибка генерации видео. Код: {resp.status_code}. Подробности в логах.")
+            return False
 
-            if "polling_url" in data:
-                Thread(target=poll_video_task,
-                       args=(data["polling_url"], headers, chat_id),
-                       daemon=True).start()
+        data = resp.json()
+
+        if "polling_url" in data:
+            Thread(target=poll_video_task, args=(data["polling_url"], headers, chat_id), daemon=True).start()
+            return True
+
+        if "unsigned_urls" in data and data["unsigned_urls"]:
+            video_url = data["unsigned_urls"][0]
+            video_resp = requests.get(video_url, timeout=60, allow_redirects=True)
+            if video_resp.status_code == 200 and _is_valid_mp4(video_resp.content):
+                _send_video_safe(chat_id, video_resp.content)
                 return True
 
-            if "unsigned_urls" in data and data["unsigned_urls"]:
-                video_url = data["unsigned_urls"][0]
-                video_resp = requests.get(video_url, timeout=60, allow_redirects=True)
-                if video_resp.status_code == 200 and _is_valid_mp4(video_resp.content):
-                    _send_video_safe(chat_id, video_resp.content)
+        if "b64_json" in data:
+            try:
+                raw = base64.b64decode(data["b64_json"])
+                if _is_valid_mp4(raw):
+                    _send_video_safe(chat_id, raw)
                     return True
+            except:
+                pass
 
-            if "b64_json" in data:
-                try:
-                    raw = base64.b64decode(data["b64_json"])
-                    if _is_valid_mp4(raw):
-                        _send_video_safe(chat_id, raw)
-                        return True
-                except Exception:
-                    pass
+        bot.send_message(chat_id, "❌ Видео не получено (пустой ответ).")
+        return False
 
-            logging.warning("Нет polling_url, пробую следующую модель...")
+    except Exception as e:
+        logging.error(f"Исключение при запросе видео: {e}")
+        bot.send_message(chat_id, "❌ Ошибка связи с API видео.")
+        return False
 
-        except Exception as e:
-            logging.error(f"Исключение при запросе к {model}: {e}")
+# ================== 5. КЛАВИАТУРЫ ДЛЯ ВЫБОРА МОДЕЛИ И ПАРАМЕТРОВ ==================
+def video_model_keyboard():
+    """Клавиатура выбора видеомодели (4 кнопки)."""
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("🌱 Seedance 2.0", callback_data="vmodel_seedance-2.0"),
+        InlineKeyboardButton("🌊 Wan 2.6", callback_data="vmodel_wan-2.6"),
+        InlineKeyboardButton("🌪️ Hailuo 2.3", callback_data="vmodel_hailuo-2.3"),
+        InlineKeyboardButton("🎬 Kling O1", callback_data="vmodel_kling-o1")
+    )
+    return markup
 
-    # Если все модели провалились, но специфическая ошибка не сработала, показываем общую
-    _handle_video_error(chat_id, 0, "Все доступные видеомодели не смогли обработать запрос.")
-    return False
-
-# ================== 5. КЛАВИАТУРЫ ДЛЯ ПАРАМЕТРОВ ==================
 def video_params_keyboard(chat_id):
     params = user_video_params.get(chat_id, {})
     duration = params.get('duration', 5)
@@ -472,10 +466,9 @@ def video_params_keyboard(chat_id):
     markup.add(InlineKeyboardButton("✅ Готово, продолжить", callback_data="vid_params_done"))
     return markup
 
-def start_video_param_selection(chat_id):
-    user_video_params[chat_id] = user_video_params.get(chat_id, {})
-    text = "Настройте параметры видео, затем нажмите «Готово»:"
-    bot.send_message(chat_id, text, reply_markup=video_params_keyboard(chat_id))
+def start_video_model_selection(chat_id):
+    user_state[chat_id] = "select_video_model"
+    bot.send_message(chat_id, "🎥 Выберите видеомодель:", reply_markup=video_model_keyboard())
 
 # ================== 6. ГЛАВНОЕ МЕНЮ ==================
 def main_menu_keyboard():
@@ -541,9 +534,36 @@ def back_to_main(message):
     user_video_frames.pop(message.chat.id, None)
     user_video_params.pop(message.chat.id, None)
     user_video_mode.pop(message.chat.id, None)
+    user_video_model.pop(message.chat.id, None)
     send_main_menu(message.chat.id)
 
-# --- Колбэки для параметров видео (СПЕЦИФИЧНЫЕ) ---
+# --- Колбэки для выбора видеомодели ---
+@bot.callback_query_handler(func=lambda call: call.data.startswith('vmodel_'))
+def set_video_model(call):
+    chat_id = call.message.chat.id
+    model_key = call.data.split('_', 1)[1]  # например 'seedance-2.0'
+    # Сохраняем полное имя модели для API
+    model_map = {
+        'seedance-2.0': 'bytedance/seedance-2.0',
+        'wan-2.6': 'alibaba/wan-2.6',
+        'hailuo-2.3': 'minimax/hailuo-2.3',
+        'kling-o1': 'kwaivgi/kling-video-o1'
+    }
+    if model_key in model_map:
+        user_video_model[chat_id] = model_map[model_key]
+        bot.answer_callback_query(call.id, f"Выбрана модель: {model_key}")
+        bot.delete_message(chat_id, call.message.message_id)
+        # Переходим к настройкам параметров
+        start_video_param_selection(chat_id)
+    else:
+        bot.answer_callback_query(call.id, "Ошибка выбора модели")
+
+def start_video_param_selection(chat_id):
+    user_video_params[chat_id] = user_video_params.get(chat_id, {})
+    text = "Настройте параметры видео, затем нажмите «Готово»:"
+    bot.send_message(chat_id, text, reply_markup=video_params_keyboard(chat_id))
+
+# --- Колбэки для параметров видео ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith('vid_dur_'))
 def set_video_duration(call):
     chat_id = call.message.chat.id
@@ -595,7 +615,7 @@ def select_video_mode(call):
         user_video_mode[chat_id] = 'text'
         user_video_frames[chat_id] = {'first': None, 'last': None}
         bot.delete_message(chat_id, call.message.message_id)
-        start_video_param_selection(chat_id)
+        start_video_model_selection(chat_id)   # выбор модели, затем параметры
 
     elif data == 'vid_image':
         user_video_mode[chat_id] = 'image_one'
@@ -675,7 +695,7 @@ def choose_last_frame(call):
         bot.send_message(chat_id, "📸 Загрузи ПОСЛЕДНИЙ кадр:", reply_markup=back_keyboard())
     else:
         user_state[chat_id] = None
-        start_video_param_selection(chat_id)
+        start_video_model_selection(chat_id)   # выбор модели после кадров
     bot.answer_callback_query(call.id)
 
 @bot.message_handler(content_types=['photo'], func=lambda m: user_state.get(m.chat.id) == "awaiting_video_image_last")
@@ -686,7 +706,7 @@ def handle_video_last_frame(message):
     b64 = base64.b64encode(downloaded).decode('utf-8')
     user_video_frames[chat_id]['last'] = b64
     user_state[chat_id] = None
-    start_video_param_selection(chat_id)
+    start_video_model_selection(chat_id)   # выбор модели после кадров
 
 # --- Генерация изображений ---
 @bot.message_handler(func=lambda m: user_state.get(m.chat.id) == "awaiting_generate_prompt")
@@ -838,7 +858,7 @@ def handle_text_chat(message):
     if message.text.startswith('/'):
         return
     state = user_state.get(message.chat.id)
-    if state in ["awaiting_prompt", "awaiting_generate_prompt", "awaiting_photo", "awaiting_video_prompt", "awaiting_video_image_first", "awaiting_video_image_last"]:
+    if state in ["awaiting_prompt", "awaiting_generate_prompt", "awaiting_photo", "awaiting_video_prompt", "awaiting_video_image_first", "awaiting_video_image_last", "select_video_model"]:
         return
     reply = ask_openrouter_text(message.text)
     bot.send_message(message.chat.id, reply, reply_markup=back_keyboard())
