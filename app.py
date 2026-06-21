@@ -525,28 +525,7 @@ def back_to_main(message):
     user_video_mode.pop(message.chat.id, None)
     send_main_menu(message.chat.id)
 
-# --- Колбэки для выбора режима видео ---
-@bot.callback_query_handler(func=lambda call: call.data.startswith('vid_'))
-def select_video_mode(call):
-    chat_id = call.message.chat.id
-    data = call.data
-
-    if data == 'vid_text':
-        user_video_mode[chat_id] = 'text'
-        user_video_frames[chat_id] = {'first': None, 'last': None}
-        bot.delete_message(chat_id, call.message.message_id)
-        start_video_param_selection(chat_id)
-
-    elif data == 'vid_image':
-        user_video_mode[chat_id] = 'image_one'
-        user_video_frames[chat_id] = {'first': None, 'last': None}
-        user_state[chat_id] = "awaiting_video_image_first"  # <--- ЭТО БЫЛО ПРОПУЩЕНО
-        bot.delete_message(chat_id, call.message.message_id)
-        bot.send_message(chat_id, "📸 Загрузи ПЕРВЫЙ кадр (начальное изображение):", reply_markup=back_keyboard())
-
-    bot.answer_callback_query(call.id)
-
-# --- Колбэки для параметров видео ---
+# --- Колбэки для параметров видео (СПЕЦИФИЧНЫЕ – ДОЛЖНЫ БЫТЬ ВЫШЕ) ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith('vid_dur_'))
 def set_video_duration(call):
     chat_id = call.message.chat.id
@@ -586,6 +565,27 @@ def video_params_done(call):
 
     user_state[chat_id] = "awaiting_video_prompt"
     bot.send_message(chat_id, "✏️ Теперь введите описание (промпт) для видео:", reply_markup=back_keyboard())
+    bot.answer_callback_query(call.id)
+
+# --- Колбэк выбора режима видео (общий, но только для конкретных значений) ---
+@bot.callback_query_handler(func=lambda call: call.data in ('vid_text', 'vid_image'))
+def select_video_mode(call):
+    chat_id = call.message.chat.id
+    data = call.data
+
+    if data == 'vid_text':
+        user_video_mode[chat_id] = 'text'
+        user_video_frames[chat_id] = {'first': None, 'last': None}
+        bot.delete_message(chat_id, call.message.message_id)
+        start_video_param_selection(chat_id)
+
+    elif data == 'vid_image':
+        user_video_mode[chat_id] = 'image_one'
+        user_video_frames[chat_id] = {'first': None, 'last': None}
+        user_state[chat_id] = "awaiting_video_image_first"
+        bot.delete_message(chat_id, call.message.message_id)
+        bot.send_message(chat_id, "📸 Загрузи ПЕРВЫЙ кадр (начальное изображение):", reply_markup=back_keyboard())
+
     bot.answer_callback_query(call.id)
 
 # --- Колбэки для выбора модели генерации изображений ---
@@ -656,8 +656,7 @@ def choose_last_frame(call):
         user_state[chat_id] = "awaiting_video_image_last"
         bot.send_message(chat_id, "📸 Загрузи ПОСЛЕДНИЙ кадр:", reply_markup=back_keyboard())
     else:
-        # Переходим к выбору параметров
-        user_state[chat_id] = None  # сбрасываем состояние, чтобы не мешать
+        user_state[chat_id] = None
         start_video_param_selection(chat_id)
     bot.answer_callback_query(call.id)
 
@@ -668,7 +667,7 @@ def handle_video_last_frame(message):
     downloaded = bot.download_file(file_info.file_path)
     b64 = base64.b64encode(downloaded).decode('utf-8')
     user_video_frames[chat_id]['last'] = b64
-    user_state[chat_id] = None  # сбрасываем состояние
+    user_state[chat_id] = None
     start_video_param_selection(chat_id)
 
 # --- Генерация изображений ---
