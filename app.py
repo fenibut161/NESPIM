@@ -229,7 +229,7 @@ def edit_image_flash_25(prompt, image_base64):
     except:
         return None, None
 
-# ================== 4. ГЕНЕРАЦИЯ ВИДЕО ==================
+# ================== 4. ГЕНЕРАЦИЯ ВИДЕО (с расширенной диагностикой) ==================
 def compress_image_if_needed(b64_str, max_size=(640, 640), quality=80):
     try:
         img_data = base64.b64decode(b64_str)
@@ -351,6 +351,8 @@ def generate_video_seedance_async(chat_id, prompt, first_frame_b64=None, last_fr
         "X-Title": "TelegramBot"
     }
     models_to_try = ["bytedance/seedance-2.0", "bytedance/seedance-2.0-fast"]
+    last_error_code = None
+    last_error_body = ""
 
     for model in models_to_try:
         logging.info(f"Пробую модель {model} для chat_id={chat_id} с параметрами: duration={duration}, resolution={resolution}, audio={audio}")
@@ -393,6 +395,9 @@ def generate_video_seedance_async(chat_id, prompt, first_frame_b64=None, last_fr
             logging.info(f"{model}: HTTP {resp.status_code}")
             logging.info(f"{model}: ответ: {resp.text[:500]}")
 
+            last_error_code = resp.status_code
+            last_error_body = resp.text[:300]
+
             if resp.status_code not in (200, 202):
                 logging.error(f"Ошибка {resp.status_code}: {resp.text[:300]}")
                 continue
@@ -425,8 +430,17 @@ def generate_video_seedance_async(chat_id, prompt, first_frame_b64=None, last_fr
 
         except Exception as e:
             logging.error(f"Исключение при запросе к {model}: {e}")
+            last_error_code = -1
+            last_error_body = str(e)
 
-    bot.send_message(chat_id, "❌ Не удалось запустить генерацию видео. Попробуйте позже.")
+    # Исчерпали все модели – отправляем информативное сообщение
+    err_msg = "❌ Не удалось запустить генерацию видео."
+    if last_error_code:
+        err_msg += f" Код ошибки: {last_error_code}"
+        if last_error_body:
+            err_msg += f" ({last_error_body[:200]})"
+    logging.error(err_msg)
+    bot.send_message(chat_id, err_msg)
     return False
 
 # ================== 5. КЛАВИАТУРЫ ДЛЯ ПАРАМЕТРОВ ==================
@@ -525,7 +539,7 @@ def back_to_main(message):
     user_video_mode.pop(message.chat.id, None)
     send_main_menu(message.chat.id)
 
-# --- Колбэки для параметров видео (СПЕЦИФИЧНЫЕ – ДОЛЖНЫ БЫТЬ ВЫШЕ) ---
+# --- Колбэки для параметров видео (СПЕЦИФИЧНЫЕ) ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith('vid_dur_'))
 def set_video_duration(call):
     chat_id = call.message.chat.id
@@ -567,7 +581,7 @@ def video_params_done(call):
     bot.send_message(chat_id, "✏️ Теперь введите описание (промпт) для видео:", reply_markup=back_keyboard())
     bot.answer_callback_query(call.id)
 
-# --- Колбэк выбора режима видео (общий, но только для конкретных значений) ---
+# --- Колбэк выбора режима видео (только для конкретных значений) ---
 @bot.callback_query_handler(func=lambda call: call.data in ('vid_text', 'vid_image'))
 def select_video_mode(call):
     chat_id = call.message.chat.id
@@ -798,7 +812,7 @@ def handle_awaiting_prompt(message):
         bot.send_message(chat_id, "❌ Не удалось отредактировать изображение.")
     send_main_menu(chat_id)
 
-# --- ФИНАЛЬНАЯ ГЕНЕРАЦИЯ ВИДЕО ---
+# --- ФИНАЛЬНАЯ ГЕНЕРАЦИЯ ВИДЕО (с улучшенной диагностикой) ---
 @bot.message_handler(func=lambda m: user_state.get(m.chat.id) == "awaiting_video_prompt")
 def handle_video_prompt(message):
     chat_id = message.chat.id
