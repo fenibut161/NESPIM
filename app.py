@@ -43,9 +43,9 @@ user_message_count = defaultdict(int)
 user_last_activity = defaultdict(float)
 
 user_state = {}
-user_edit_model = {}        # 'flux' или 'grok'
+user_edit_model = {}        # 'flux' или 'seedream'
 user_face_mode = {}
-user_generate_model = {}    # 'flux' или 'grok'
+user_generate_model = {}    # 'flux' или 'seedream'
 user_pending_photo = {}
 user_video_mode = {}
 user_video_frames = {}
@@ -54,9 +54,8 @@ user_video_model = {}
 user_video_history = defaultdict(list)
 
 # --- МОДЕЛИ ---
-# Генерация и редактирование изображений
-FLUX_MODEL = "black-forest-labs/flux.2-pro"          # Image-only: modalities=["image"]
-GROK_IMAGE_MODEL = "x-ai/grok-imagine-image-quality"  # Text+image: modalities=["image","text"]
+FLUX_MODEL = "black-forest-labs/flux.2-pro"
+SEEDREAM_MODEL = "bytedance-seed/seedream-4.5"
 
 # --- СИНХРОНИЗАЦИЯ С GITHUB GIST ---
 def load_data():
@@ -90,7 +89,6 @@ def load_data():
             logging.error(f"Ошибка чтения локального файла: {e}")
             data = {}
 
-    # КЛЮЧИ ОБЯЗАТЕЛЬНО int
     user_credits = defaultdict(int, {int(k): v for k, v in data.get('credits', {}).items()})
     user_credit_history = defaultdict(list, {int(k): v for k, v in data.get('history', {}).items()})
     user_message_count = defaultdict(int, {int(k): v for k, v in data.get('messages', {}).items()})
@@ -184,7 +182,6 @@ def _safe_resample():
         return Image.LANCZOS
 
 def _parse_image_response(resp):
-    """Парсит ответ OpenRouter с изображением из message.images."""
     if resp.status_code != 200:
         return None, f"Ошибка API: {resp.status_code} {resp.text[:300]}"
     try:
@@ -216,7 +213,7 @@ def generate_image_flux(prompt):
     payload = {
         "model": FLUX_MODEL,
         "messages": [{"role": "user", "content": prompt}],
-        "modalities": ["image"]  # Flux — image-only
+        "modalities": ["image"]
     }
     try:
         resp = requests.post(OPENROUTER_URL, json=payload, headers=_build_headers(), timeout=120)
@@ -237,7 +234,7 @@ def edit_image_flux(prompt, image_base64):
                 ]
             }
         ],
-        "modalities": ["image"]  # Flux — image-only
+        "modalities": ["image"]
     }
     try:
         resp = requests.post(OPENROUTER_URL, json=payload, headers=_build_headers(), timeout=120)
@@ -246,23 +243,23 @@ def edit_image_flux(prompt, image_base64):
         logging.error(f"Flux edit exception: {e}")
         return None, str(e)
 
-# ================== 4. GROK (ГЕНЕРАЦИЯ + РЕДАКТИРОВАНИЕ) ==================
-def generate_image_grok(prompt):
+# ================== 4. SEEDREAM 4.5 (ГЕНЕРАЦИЯ + РЕДАКТИРОВАНИЕ) ==================
+def generate_image_seedream(prompt):
     payload = {
-        "model": GROK_IMAGE_MODEL,
+        "model": SEEDREAM_MODEL,
         "messages": [{"role": "user", "content": prompt}],
-        "modalities": ["image", "text"]  # Grok выдаёт и текст, и картинку
+        "modalities": ["image"]
     }
     try:
         resp = requests.post(OPENROUTER_URL, json=payload, headers=_build_headers(), timeout=120)
         return _parse_image_response(resp)[0]
     except Exception as e:
-        logging.error(f"Grok generation error: {e}")
+        logging.error(f"Seedream generation error: {e}")
     return None
 
-def edit_image_grok(prompt, image_base64):
+def edit_image_seedream(prompt, image_base64):
     payload = {
-        "model": GROK_IMAGE_MODEL,
+        "model": SEEDREAM_MODEL,
         "messages": [
             {
                 "role": "user",
@@ -272,13 +269,13 @@ def edit_image_grok(prompt, image_base64):
                 ]
             }
         ],
-        "modalities": ["image", "text"]
+        "modalities": ["image"]
     }
     try:
         resp = requests.post(OPENROUTER_URL, json=payload, headers=_build_headers(), timeout=120)
         return _parse_image_response(resp)
     except Exception as e:
-        logging.error(f"Grok edit exception: {e}")
+        logging.error(f"Seedream edit exception: {e}")
         return None, str(e)
 
 # ================== 5. ВИДЕО ==================
@@ -513,12 +510,18 @@ def profile(message):
     user_last_activity[chat_id] = time.time()
     credits = user_credits.get(chat_id, 0)
     history = user_credit_history.get(chat_id, [])
-    text = f"👤 <b>Ваш профиль</b>\n\n💰 Баланс: {credits} кредитов\n\n"
+    text = f"👤 <b>Ваш профиль</b>
+
+💰 Баланс: {credits} кредитов
+
+"
     if history:
-        text += "📋 <b>Последние операции:</b>\n"
+        text += "📋 <b>Последние операции:</b>
+"
         for ts, delta, reason in history[-5:]:
             sign = "+" if delta > 0 else ""
-            text += f"{sign}{delta} кр. – {escape(reason)}\n"
+            text += f"{sign}{delta} кр. – {escape(reason)}
+"
     else:
         text += "📋 <b>Операций пока нет.</b>"
     markup = InlineKeyboardMarkup()
@@ -535,15 +538,23 @@ def goto_shop(call):
 def shop(message):
     chat_id = message.chat.id
     user_last_activity[chat_id] = time.time()
-    text = ("🛒 <b>Магазин кредитов</b>\n1 кредит позволяет:\n"
-            "• Генерация (Flux/Grok) — 2 кредита\n"
-            "• Редактирование (Flux/Grok) — 3 кредита\n"
-            "• Видео 5 сек — 25 кр., 10 сек — 50 кр., 15 сек — 100 кр.\n"
-            "• Чат с ИИ — 1 кредит за 50 сообщений\n\n"
+    text = ("🛒 <b>Магазин кредитов</b>
+1 кредит позволяет:
+"
+            "• Генерация (Flux/Seedream) — 2 кредита
+"
+            "• Редактирование (Flux/Seedream) — 3 кредита
+"
+            "• Видео 5 сек — 25 кр., 10 сек — 50 кр., 15 сек — 100 кр.
+"
+            "• Чат с ИИ — 1 кредит за 50 сообщений
+
+"
             "Выберите пакет:")
     markup = InlineKeyboardMarkup(row_width=1)
     for key, pkg in PACKAGES.items():
-        text += f"\n<b>{escape(pkg['name'])}</b>: {pkg['credits']} кредитов — {pkg['price']} ⭐️"
+        text += f"
+<b>{escape(pkg['name'])}</b>: {pkg['credits']} кредитов — {pkg['price']} ⭐️"
         markup.add(InlineKeyboardButton(f"Купить {escape(pkg['name'])} — {pkg['price']} ⭐️", callback_data=f"buy_{key}"))
     bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
 
@@ -585,7 +596,8 @@ def process_payment(message):
             user_credits[chat_id] = user_credits.get(chat_id, 0) + pkg['credits']
             user_credit_history[chat_id].append((time.time(), pkg['credits'], f"Покупка пакета {pkg['name']}"))
             save_data()
-        bot.send_message(chat_id, f"✅ Оплата прошла! Начислено {pkg['credits']} кредитов.\nБаланс: {user_credits[chat_id]} кредитов")
+        bot.send_message(chat_id, f"✅ Оплата прошла! Начислено {pkg['credits']} кредитов.
+Баланс: {user_credits[chat_id]} кредитов")
 
 @bot.message_handler(commands=['paysupport'])
 def pay_support(message):
@@ -598,7 +610,13 @@ def admin_panel(message):
         return
     with data_lock:
         total_credits = sum(user_credits.values())
-    text = f"👑 Админ-панель\nПользователей: {len(user_credits)}\nКредитов всего: {total_credits}\n\nКоманды:\n/addcredits <id> <amount>\n/removecredits <id> <amount>"
+    text = f"👑 Админ-панель
+Пользователей: {len(user_credits)}
+Кредитов всего: {total_credits}
+
+Команды:
+/addcredits <id> <amount>
+/removecredits <id> <amount>"
     bot.send_message(message.chat.id, text)
 
 @bot.message_handler(commands=['addcredits'])
@@ -649,7 +667,7 @@ def start(message):
     chat_id = message.chat.id
     user_last_activity[chat_id] = time.time()
     user_state[chat_id] = None
-    send_main_menu(chat_id, "👋 Привет! Я умею генерировать изображения (Flux/Grok), редактировать фото и создавать видео. Выбери действие в меню ниже.")
+    send_main_menu(chat_id, "👋 Привет! Я умею генерировать изображения (Flux/Seedream), редактировать фото и создавать видео. Выбери действие в меню ниже.")
 
 def send_main_menu(chat_id, text="Главное меню:"):
     bot.send_message(chat_id, text, reply_markup=main_menu_keyboard())
@@ -662,7 +680,7 @@ def menu_generate_image(message):
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("🌊 Flux Pro (2 кр.)", callback_data="gen_flux"),
-        InlineKeyboardButton("🤖 Grok Imagine (2 кр.)", callback_data="gen_grok")
+        InlineKeyboardButton("🎨 Seedream 4.5 (2 кр.)", callback_data="gen_seedream")
     )
     bot.send_message(message.chat.id, "Выбери модель для генерации:", reply_markup=markup)
 
@@ -674,7 +692,7 @@ def menu_edit_photo(message):
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("🌊 Flux Pro (3 кр.)", callback_data="edit_flux"),
-        InlineKeyboardButton("🤖 Grok Imagine (3 кр.)", callback_data="edit_grok")
+        InlineKeyboardButton("🎨 Seedream 4.5 (3 кр.)", callback_data="edit_seedream")
     )
     bot.send_message(message.chat.id, "Выбери модель редактирования:", reply_markup=markup)
 
@@ -810,8 +828,8 @@ def select_generate_model(call):
     data = call.data
     if data == 'gen_flux':
         user_generate_model[chat_id] = 'flux'
-    elif data == 'gen_grok':
-        user_generate_model[chat_id] = 'grok'
+    elif data == 'gen_seedream':
+        user_generate_model[chat_id] = 'seedream'
     bot.answer_callback_query(call.id, f"Выбрана модель: {data}")
     bot.delete_message(chat_id, call.message.message_id)
     user_state[chat_id] = "awaiting_generate_prompt"
@@ -824,8 +842,8 @@ def select_edit_model(call):
     data = call.data
     if data == 'edit_flux':
         user_edit_model[chat_id] = 'flux'
-    elif data == 'edit_grok':
-        user_edit_model[chat_id] = 'grok'
+    elif data == 'edit_seedream':
+        user_edit_model[chat_id] = 'seedream'
     bot.answer_callback_query(call.id, f"Выбрана модель: {data}")
     bot.delete_message(chat_id, call.message.message_id)
     markup = InlineKeyboardMarkup(row_width=2)
@@ -847,7 +865,7 @@ def select_face_mode(call):
     user_state[chat_id] = "awaiting_photo"
     bot.send_message(chat_id, "📸 Загрузи фото, которое нужно отредактировать.", reply_markup=back_keyboard())
 
-# --- Загрузка кадров видео ---
+# --- Загрузка кадров для видео ---
 @bot.message_handler(content_types=['photo'], func=lambda m: user_state.get(m.chat.id) == "awaiting_video_image_first")
 def handle_video_first_frame(message):
     chat_id = message.chat.id
@@ -911,8 +929,8 @@ def handle_generate_prompt(message):
     waiting = bot.send_message(chat_id, f"🎨 Генерирую через {model}...")
     if model == 'flux':
         img_data = generate_image_flux(prompt)
-    else:  # grok
-        img_data = generate_image_grok(prompt)
+    else:  # seedream
+        img_data = generate_image_seedream(prompt)
 
     if img_data:
         try:
@@ -979,8 +997,8 @@ def handle_awaiting_prompt(message):
     waiting = bot.send_message(chat_id, f"🎨 Редактирую через {model}...")
     if model == 'flux':
         img_data, error_msg = edit_image_flux(prompt, photo_base64)
-    else:  # grok
-        img_data, error_msg = edit_image_grok(prompt, photo_base64)
+    else:  # seedream
+        img_data, error_msg = edit_image_seedream(prompt, photo_base64)
 
     if img_data:
         caption = f"✅ Отредактировано ({model})"
@@ -1003,7 +1021,8 @@ def handle_awaiting_prompt(message):
                 user_credit_history[chat_id].append((time.time(), cost, f"Возврат за редактирование {model}"))
                 save_data()
                 bot.send_message(chat_id, f"❌ Ошибка редактирования. {cost} кредит возвращён.")
-        bot.send_message(chat_id, f"❌ Не удалось отредактировать изображение.\n{error_msg}")
+        bot.send_message(chat_id, f"❌ Не удалось отредактировать изображение.
+{error_msg}")
     else:
         with data_lock:
             if chat_id != ADMIN_ID:
@@ -1013,7 +1032,7 @@ def handle_awaiting_prompt(message):
                 bot.send_message(chat_id, "❌ Не удалось отредактировать изображение. Кредит возвращён.")
     send_main_menu(chat_id)
 
-# ================== 14. ВИДЕО ==================
+# Финальная генерация видео
 @bot.message_handler(func=lambda m: user_state.get(m.chat.id) == "awaiting_video_prompt")
 def handle_video_prompt(message):
     chat_id = message.chat.id
@@ -1031,7 +1050,7 @@ def handle_video_prompt(message):
 
     Thread(target=generate_video_async, args=(chat_id, prompt, first_frame, last_frame), daemon=True).start()
 
-# ================== 15. ЧАТ С DEEPSEEK ==================
+# ================== 14. ЧАТ С DEEPSEEK ==================
 @bot.message_handler(func=lambda m: True, content_types=['text'])
 def handle_text_chat(message):
     if message.text.startswith('/'):
@@ -1092,7 +1111,7 @@ def handle_text_chat(message):
 
     bot.send_message(chat_id, reply, reply_markup=back_keyboard())
 
-    # Гарантированное сохранение
+    # Гарантированное сохранение после любого сообщения
     with data_lock:
         save_data()
 
@@ -1100,7 +1119,7 @@ def handle_text_chat(message):
 def handle_other(message):
     bot.send_message(message.chat.id, "Пожалуйста, используй кнопки меню.")
 
-# ================== 16. ЗАПУСК ==================
+# ================== 15. ЗАПУСК ==================
 @app.route('/static/<path:filename>')
 def static_files(filename):
     return send_from_directory('static', filename)
