@@ -9,7 +9,7 @@ import json
 import logging
 from html import escape
 from flask import Flask, request, send_from_directory
-from threading import Thread, Lock
+from threading import Thread, RLock
 from telebot.types import (ReplyKeyboardMarkup, KeyboardButton,
                            InlineKeyboardMarkup, InlineKeyboardButton,
                            LabeledPrice)
@@ -31,7 +31,7 @@ OPENROUTER_VIDEO_URL = "https://openrouter.ai/api/v1/videos"
 ADMIN_ID = 534008787
 
 DATA_FILE = "bot_data.json"
-data_lock = Lock()
+data_lock = RLock()  # <-- ИСПРАВЛЕНО: RLock вместо Lock
 
 # --- LOGGING ---
 logging.basicConfig(
@@ -148,7 +148,6 @@ def save_data():
         else:
             logging.warning(f"[SAVE] Skipped Gist: GIST_ID={'set' if GIST_ID else 'missing'}, GITHUB_TOKEN={'set' if GITHUB_TOKEN else 'missing'}")
         
-        # Принудительный сброс буфера
         sys.stdout.flush()
 
 load_data()
@@ -694,7 +693,6 @@ def add_credits(message):
             user_credit_history[uid].append((time.time(), amt, "Начисление админом"))
             save_data()
         
-        # Явное подтверждение с балансом
         current_balance = user_credits[uid]
         history_count = len(user_credit_history[uid])
         confirm_text = (
@@ -1172,6 +1170,10 @@ def handle_other(message):
 @app.route("/")
 def index():
     return "Bot is running"
+
+@app.route("/health")
+def health():
+    return "OK", 200
 
 @app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
 def webhook():
