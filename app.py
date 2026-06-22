@@ -494,8 +494,8 @@ def shop(message):
     chat_id = message.chat.id
     user_last_activity[chat_id] = time.time()
     text = (
-        "🛒 <b>Магазин 🔷</b>\n"
-        "1 🔷 позволяет:\n"
+        "🛒 <b>Магазин для покупки🔷</b>\n"
+        " 🔷 - токены для генерации\n"
         "• Генерация (Flux/Seedream) — 2 🔷\n"
         "• Редактирование (Flux/Seedream) — 3 🔷\n"
         "• Видео 5 сек — 25 🔷, 10 сек — 50 🔷, 15 сек — 100 🔷\n"
