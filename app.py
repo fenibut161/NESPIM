@@ -654,13 +654,14 @@ def add_credits(message):
             user_credits[uid] = user_credits.get(uid, 0) + amt
             user_credit_history[uid].append((time.time(), amt, "Начисление админом"))
             save_data()
-        bot.send_message(message.chat.id, f"✅ Начислено {amt} кредитов пользователю {uid}")
+        # Уведомление администратору
+        bot.send_message(message.chat.id, f"🎉 Готово! {amt} кредитов зачислены пользователю {uid}. Текущий баланс: {user_credits[uid]}.")
+        # Уведомление пользователю
         try:
-            bot.send_message(uid, f"🎉 Администратор начислил вам {amt} кредитов. Баланс: {user_credits[uid]}")
+            bot.send_message(uid, f"🎉 Администратор начислил вам {amt} кредитов. Ваш баланс: {user_credits[uid]}")
         except Exception as e:
             logging.warning(f"Не удалось уведомить {uid}: {e}")
-    except Exception as e:
-        logging.error(f"Add credits error: {e}")
+    except:
         bot.send_message(message.chat.id, "Формат: /addcredits <user_id> <amount>")
 
 @bot.message_handler(commands=['removecredits'])
