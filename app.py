@@ -57,8 +57,9 @@ SEEDREAM_MODEL = "bytedance-seed/seedream-4.5"
 def load_data():
     global user_credits, user_credit_history, user_message_count, user_last_activity
     data = None
-    gist_loaded = False
+    source = "fresh"
 
+    # 1. Пробуем Gist
     if GIST_ID and GITHUB_TOKEN:
         url = f"https://api.github.com/gists/{GIST_ID}"
         headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
@@ -67,33 +68,39 @@ def load_data():
             if r.status_code == 200:
                 content = r.json()["files"]["bot_data.json"]["content"]
                 data = json.loads(content)
-                if data and any([data.get("credits"), data.get("history"), data.get("messages")]):
-                    gist_loaded = True
-                    print("Loaded data from Gist (non-empty)")
+                # Проверяем, что данные реально не пустые (хотя бы один пользователь есть)
+                if data and isinstance(data, dict) and any([
+                    data.get("credits"), data.get("history"), data.get("messages")
+                ]):
+                    source = "Gist"
+                    print(f"[LOAD] Gist OK: {len(data.get('credits', {}))} users, {sum(data.get('credits', {}).values())} total credits")
                 else:
-                    print("Gist data is empty, fallback to local")
+                    print("[LOAD] Gist returned empty data, fallback to local")
                     data = None
             else:
-                print(f"Gist load failed: {r.status_code}")
+                print(f"[LOAD] Gist HTTP {r.status_code}, fallback to local")
         except Exception as e:
-            print(f"Gist load exception: {e}")
+            print(f"[LOAD] Gist exception: {e}, fallback to local")
 
+    # 2. Пробуем локальный файл
     if data is None:
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as fh:
                 data = json.load(fh)
-            print("Loaded from local file")
+            source = "local file"
+            print(f"[LOAD] Local file OK: {len(data.get('credits', {}))} users")
         except FileNotFoundError:
-            print("No local file, starting fresh")
+            print("[LOAD] No local file, starting fresh")
             data = {}
         except Exception as e:
-            print(f"Local file error: {e}")
+            print(f"[LOAD] Local file error: {e}")
             data = {}
 
     user_credits = defaultdict(int, {int(k): v for k, v in data.get("credits", {}).items()})
     user_credit_history = defaultdict(list, {int(k): v for k, v in data.get("history", {}).items()})
     user_message_count = defaultdict(int, {int(k): v for k, v in data.get("messages", {}).items()})
     user_last_activity = defaultdict(float, {int(k): v for k, v in data.get("last_activity", {}).items()})
+    print(f"[LOAD] Final state from {source}: {sum(user_credits.values())} total credits")
 
 def save_data():
     with data_lock:
@@ -103,11 +110,14 @@ def save_data():
             "messages": dict(user_message_count),
             "last_activity": dict(user_last_activity),
         }
+        # Локально
         try:
             with open(DATA_FILE, "w", encoding="utf-8") as fh:
                 json.dump(data, fh, ensure_ascii=False, indent=2)
         except Exception as e:
-            print(f"Local save error: {e}")
+            print(f"[SAVE] Local save error: {e}")
+
+        # Gist
         if GIST_ID and GITHUB_TOKEN:
             try:
                 url = f"https://api.github.com/gists/{GIST_ID}"
@@ -115,11 +125,11 @@ def save_data():
                 payload = {"files": {"bot_data.json": {"content": json.dumps(data, ensure_ascii=False, indent=2)}}}
                 r = requests.patch(url, json=payload, headers=headers, timeout=30)
                 if r.status_code == 200:
-                    print("Saved to Gist")
+                    print(f"[SAVE] Gist OK: {len(data['credits'])} users, {sum(data['credits'].values())} total credits")
                 else:
-                    print(f"Gist save error {r.status_code}")
+                    print(f"[SAVE] Gist FAILED {r.status_code}: {r.text[:200]}")
             except Exception as e:
-                print(f"Gist save exception: {e}")
+                print(f"[SAVE] Gist exception: {e}")
 
 load_data()
 
@@ -137,9 +147,9 @@ VIDEO_MODEL_FEATURES = {
 }
 
 PACKAGES = {
-    "start": {"name": "Старт", "credits": 50, "price_stars": 250, "price_rub": 400, "desc": "50 ♦ на любые операции"},
-    "optima": {"name": "Оптима", "credits": 150, "price_stars": 625, "price_rub": 1000, "desc": "150 ♦ (выгоднее)"},
-    "maxi": {"name": "Макси", "credits": 400, "price_stars": 1500, "price_rub": 2400, "desc": "400 ♦ (максимальная выгода)"},
+    "start": {"name": "Старт", "credits": 50, "price_stars": 250, "price_rub": 400, "desc": "50 🔷 на любые операции"},
+    "optima": {"name": "Оптима", "credits": 150, "price_stars": 625, "price_rub": 1000, "desc": "150 🔷 (выгоднее)"},
+    "maxi": {"name": "Макси", "credits": 400, "price_stars": 1500, "price_rub": 2400, "desc": "400 🔷 (максимальная выгода)"},
 }
 
 CREDIT_COSTS = {
@@ -342,12 +352,12 @@ def generate_video_async(chat_id, prompt, first_frame_b64=None, last_frame_b64=N
     with data_lock:
         if chat_id != ADMIN_ID:
             if user_credits.get(chat_id, 0) < cost:
-                bot.send_message(chat_id, f"❌ Недостаточно ♦. Нужно {cost}, у вас {user_credits.get(chat_id, 0)}. Пополните баланс в магазине 💰.")
+                bot.send_message(chat_id, f"❌ Недостаточно 🔷. Нужно {cost}, у вас {user_credits.get(chat_id, 0)}. Пополните баланс в магазине 💰.")
                 return False
             user_credits[chat_id] -= cost
             user_credit_history[chat_id].append((time.time(), -cost, f"Видео {duration}с"))
             save_data()
-            bot.send_message(chat_id, f"✅ Списано {cost} ♦. Осталось: {user_credits[chat_id]}")
+            bot.send_message(chat_id, f"✅ Списано {cost} 🔷. Осталось: {user_credits[chat_id]}")
     params = user_video_params.get(chat_id, {})
     resolution = params.get("resolution", "480p")
     audio = params.get("audio", True)
@@ -387,7 +397,7 @@ def generate_video_async(chat_id, prompt, first_frame_b64=None, last_frame_b64=N
                     user_credits[chat_id] = user_credits.get(chat_id, 0) + cost
                     user_credit_history[chat_id].append((time.time(), cost, "Возврат за видео"))
                     save_data()
-            bot.send_message(chat_id, f"❌ Ошибка {resp.status_code}. ♦ возвращены.")
+            bot.send_message(chat_id, f"❌ Ошибка {resp.status_code}. 🔷 возвращены.")
             return False
         data = resp.json()
         if "polling_url" in data:
@@ -409,7 +419,7 @@ def generate_video_async(chat_id, prompt, first_frame_b64=None, last_frame_b64=N
                 user_credits[chat_id] += cost
                 user_credit_history[chat_id].append((time.time(), cost, "Возврат за видео"))
                 save_data()
-        bot.send_message(chat_id, "❌ Пустой ответ. ♦ возвращены.")
+        bot.send_message(chat_id, "❌ Пустой ответ. 🔷 возвращены.")
     except Exception as e:
         print(f"Video exception: {e}")
         with data_lock:
@@ -417,7 +427,7 @@ def generate_video_async(chat_id, prompt, first_frame_b64=None, last_frame_b64=N
                 user_credits[chat_id] += cost
                 user_credit_history[chat_id].append((time.time(), cost, "Возврат за видео (ошибка)"))
                 save_data()
-        bot.send_message(chat_id, "❌ Ошибка связи. ♦ возвращены.")
+        bot.send_message(chat_id, "❌ Ошибка связи. 🔷 возвращены.")
     return False
 
 # ================== KEYBOARDS ==================
@@ -485,12 +495,12 @@ def profile(message):
     user_last_activity[chat_id] = time.time()
     credits = user_credits.get(chat_id, 0)
     history = user_credit_history.get(chat_id, [])
-    text = f"👤 <b>Ваш профиль</b>\n\n💰 Баланс: {credits} ♦\n\n"
+    text = f"👤 <b>Ваш профиль</b>\n\n💰 Баланс: {credits} 🔷\n\n"
     if history:
         text += "📋 <b>Последние операции:</b>\n"
         for ts, delta, reason in history[-5:]:
             sign = "+" if delta > 0 else ""
-            text += f"{sign}{delta} ♦ – {escape(reason)}\n"
+            text += f"{sign}{delta} 🔷 – {escape(reason)}\n"
     else:
         text += "📋 <b>Операций пока нет.</b>"
     markup = InlineKeyboardMarkup()
@@ -508,16 +518,16 @@ def shop(message):
     chat_id = message.chat.id
     user_last_activity[chat_id] = time.time()
     text = (
-        "🛒 <b>Магазин ♦</b>\n"
-        "1 ♦ позволяет:\n"
-        "• Генерация (Flux/Seedream) — 2 ♦\n"
-        "• Редактирование (Flux/Seedream) — 3 ♦\n"
-        "• Видео 5 сек — 25 ♦, 10 сек — 50 ♦, 15 сек — 100 ♦\n"
-        "• Чат с ИИ — 1 ♦ за 50 сообщений\n\n"
+        "🛒 <b>Магазин 🔷</b>\n"
+        "1 🔷 позволяет:\n"
+        "• Генерация (Flux/Seedream) — 2 🔷\n"
+        "• Редактирование (Flux/Seedream) — 3 🔷\n"
+        "• Видео 5 сек — 25 🔷, 10 сек — 50 🔷, 15 сек — 100 🔷\n"
+        "• Чат с ИИ — 1 🔷 за 50 сообщений\n\n"
         "Выберите пакет:"
     )
     for key, pkg in PACKAGES.items():
-        text += f"\n<b>{escape(pkg['name'])}</b>: {pkg['credits']} ♦ — {pkg['price_stars']} ⭐️ / {pkg['price_rub']} ₽"
+        text += f"\n<b>{escape(pkg['name'])}</b>: {pkg['credits']} 🔷 — {pkg['price_stars']} ⭐️ / {pkg['price_rub']} ₽"
     bot.send_message(chat_id, text, parse_mode="HTML")
     markup = InlineKeyboardMarkup(row_width=2)
     for key, pkg in PACKAGES.items():
@@ -566,7 +576,7 @@ def process_payment(message):
             user_credits[chat_id] = user_credits.get(chat_id, 0) + pkg["credits"]
             user_credit_history[chat_id].append((time.time(), pkg["credits"], f"Покупка пакета {pkg['name']} (Stars)"))
             save_data()
-        bot.send_message(chat_id, f"✅ Оплата прошла! Начислено {pkg['credits']} ♦.\nБаланс: {user_credits[chat_id]} ♦")
+        bot.send_message(chat_id, f"✅ Оплата прошла! Начислено {pkg['credits']} 🔷.\nБаланс: {user_credits[chat_id]} 🔷")
 
 # --- CARD PAYMENT (manual) ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith("buy_card_"))
@@ -583,18 +593,18 @@ def handle_card_payment(call):
         chat_id,
         f"💳 <b>Оплата картой — пакет «{pkg['name']}»</b>\n\n"
         f"Сумма: <b>{pkg['price_rub']} ₽</b>\n"
-        f"Вы получите: <b>{pkg['credits']} ♦</b>\n\n"
+        f"Вы получите: <b>{pkg['credits']} 🔷</b>\n\n"
         f"Переведите сумму на Т-Банк / СБЕР по номеру:\n"
         f"<code>+79192329005</code>\n\n"
         f"❗️ <b>Укажите в комментарии к переводу ваш Telegram ID:</b>\n"
         f"<code>{chat_id}</code>\n\n"
-        f"После перевода ♦ начислятся вручную в течение 15 минут.",
+        f"После перевода 🔷 начислятся вручную в течение 15 минут.",
         parse_mode="HTML",
     )
     bot.answer_callback_query(call.id, "Реквизиты отправлены")
     try:
         markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton(f"✅ Начислить {pkg['credits']}♦", callback_data=f"admin_grant_{chat_id}_{pkg_key}"))
+        markup.add(InlineKeyboardButton(f"✅ Начислить {pkg['credits']}🔷", callback_data=f"admin_grant_{chat_id}_{pkg_key}"))
         bot.send_message(
             ADMIN_ID,
             f"💳 <b>Запрос на оплату картой</b>\n\n"
@@ -602,7 +612,7 @@ def handle_card_payment(call):
             f"ID: <code>{chat_id}</code>\n"
             f"Пакет: <b>{pkg['name']}</b>\n"
             f"Сумма: {pkg['price_rub']} ₽\n"
-            f"♦: {pkg['credits']}",
+            f"🔷: {pkg['credits']}",
             parse_mode="HTML",
             reply_markup=markup,
         )
@@ -628,14 +638,14 @@ def admin_grant_credits(call):
         user_credits[target_id] = user_credits.get(target_id, 0) + pkg["credits"]
         user_credit_history[target_id].append((time.time(), pkg["credits"], f"Покупка пакета {pkg['name']} (карта)"))
         save_data()
-    bot.answer_callback_query(call.id, f"Начислено {pkg['credits']} ♦")
+    bot.answer_callback_query(call.id, f"Начислено {pkg['credits']} 🔷")
     bot.edit_message_text(
-        f"✅ <b>Начислено</b>\nПользователю {target_id}: +{pkg['credits']} ♦",
+        f"✅ <b>Начислено</b>\nПользователю {target_id}: +{pkg['credits']} 🔷",
         call.message.chat.id,
         call.message.message_id,
     )
     try:
-        bot.send_message(target_id, f"🎉 Администратор начислил вам {pkg['credits']} ♦ (пакет «{pkg['name']}»).\nВаш баланс: {user_credits[target_id]} ♦")
+        bot.send_message(target_id, f"🎉 Администратор начислил вам {pkg['credits']} 🔷 (пакет «{pkg['name']}»).\nВаш баланс: {user_credits[target_id]} 🔷")
     except Exception as e:
         print(f"Не удалось уведомить {target_id}: {e}")
 
@@ -650,7 +660,7 @@ def admin_panel(message):
         return
     with data_lock:
         total_credits = sum(user_credits.values())
-    text = f"👑 Админ-панель\nПользователей: {len(user_credits)}\n♦ всего: {total_credits}\n\nКоманды:\n/addcredits <id> <amount>\n/removecredits <id> <amount>"
+    text = f"👑 Админ-панель\nПользователей: {len(user_credits)}\n🔷 всего: {total_credits}\n\nКоманды:\n/addcredits <id> <amount>\n/removecredits <id> <amount>"
     bot.send_message(message.chat.id, text)
 
 @bot.message_handler(commands=["addcredits"])
@@ -664,9 +674,9 @@ def add_credits(message):
             user_credits[uid] = user_credits.get(uid, 0) + amt
             user_credit_history[uid].append((time.time(), amt, "Начисление админом"))
             save_data()
-        bot.send_message(message.chat.id, f"🎉 Готово! {amt} ♦ зачислены пользователю {uid}. Текущий баланс: {user_credits[uid]}.")
+        bot.send_message(message.chat.id, f"🎉 Готово! {amt} 🔷 зачислены пользователю {uid}. Текущий баланс: {user_credits[uid]}.")
         try:
-            bot.send_message(uid, f"🎉 Администратор начислил вам {amt} ♦. Ваш баланс: {user_credits[uid]}")
+            bot.send_message(uid, f"🎉 Администратор начислил вам {amt} 🔷. Ваш баланс: {user_credits[uid]}")
         except Exception as e:
             print(f"Не удалось уведомить {uid}: {e}")
     except Exception:
@@ -684,13 +694,13 @@ def remove_credits(message):
                 user_credits[uid] -= amt
                 user_credit_history[uid].append((time.time(), -amt, "Списание админом"))
                 save_data()
-                bot.send_message(message.chat.id, f"✅ Списано {amt} ♦ у {uid}")
+                bot.send_message(message.chat.id, f"✅ Списано {amt} 🔷 у {uid}")
                 try:
-                    bot.send_message(uid, f"ℹ️ Администратор списал {amt} ♦. Баланс: {user_credits[uid]}")
+                    bot.send_message(uid, f"ℹ️ Администратор списал {amt} 🔷. Баланс: {user_credits[uid]}")
                 except Exception as e:
                     print(f"Не удалось уведомить {uid}: {e}")
             else:
-                bot.send_message(message.chat.id, "Недостаточно ♦")
+                bot.send_message(message.chat.id, "Недостаточно 🔷")
     except Exception as e:
         print(f"Remove credits error: {e}")
         bot.send_message(message.chat.id, "Формат: /removecredits <user_id> <amount>")
@@ -713,8 +723,8 @@ def menu_generate_image(message):
     user_state[chat_id] = "select_model_generate"
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
-        InlineKeyboardButton("🌊 Flux (2♦)", callback_data="gen_flux"),
-        InlineKeyboardButton("🎨 Seedream (2♦)", callback_data="gen_seedream"),
+        InlineKeyboardButton("🌊 Flux (2🔷)", callback_data="gen_flux"),
+        InlineKeyboardButton("🎨 Seedream (2🔷)", callback_data="gen_seedream"),
     )
     bot.send_message(message.chat.id, "Выбери модель для генерации:", reply_markup=markup)
 
@@ -725,8 +735,8 @@ def menu_edit_photo(message):
     user_state[chat_id] = "select_model_edit"
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
-        InlineKeyboardButton("🌊 Flux (3♦)", callback_data="edit_flux"),
-        InlineKeyboardButton("🎨 Seedream (3♦)", callback_data="edit_seedream"),
+        InlineKeyboardButton("🌊 Flux (3🔷)", callback_data="edit_flux"),
+        InlineKeyboardButton("🎨 Seedream (3🔷)", callback_data="edit_seedream"),
     )
     bot.send_message(message.chat.id, "Выбери модель редактирования:", reply_markup=markup)
 
@@ -747,7 +757,7 @@ def menu_chat(message):
     chat_id = message.chat.id
     user_last_activity[chat_id] = time.time()
     user_state[chat_id] = None
-    bot.send_message(message.chat.id, "Задай любой вопрос (DeepSeek V4 Pro). Каждые 50 сообщений списывается 1 ♦.", reply_markup=back_keyboard())
+    bot.send_message(message.chat.id, "Задай любой вопрос (DeepSeek V4 Pro). Каждые 50 сообщений списывается 1 🔷.", reply_markup=back_keyboard())
 
 @bot.message_handler(func=lambda m: m.text == "👤 Профиль")
 def menu_profile(message):
@@ -948,13 +958,13 @@ def handle_generate_prompt(message):
     with data_lock:
         if chat_id != ADMIN_ID:
             if user_credits.get(chat_id, 0) < cost:
-                bot.send_message(chat_id, f"❌ Недостаточно ♦. Нужно {cost} ♦.")
+                bot.send_message(chat_id, f"❌ Недостаточно 🔷. Нужно {cost} 🔷.")
                 send_main_menu(chat_id)
                 return
             user_credits[chat_id] -= cost
             user_credit_history[chat_id].append((time.time(), -cost, f"Генерация {model}"))
             save_data()
-            bot.send_message(chat_id, f"✅ Списано {cost} ♦. Осталось: {user_credits[chat_id]}")
+            bot.send_message(chat_id, f"✅ Списано {cost} 🔷. Осталось: {user_credits[chat_id]}")
     bot.send_message(chat_id, f"🎨 Генерирую через {model}...")
     if model == "flux":
         img_data = generate_image_flux(prompt)
@@ -977,7 +987,7 @@ def handle_generate_prompt(message):
                 user_credits[chat_id] += cost
                 user_credit_history[chat_id].append((time.time(), cost, f"Возврат за генерацию {model}"))
                 save_data()
-                bot.send_message(chat_id, f"❌ Ошибка генерации. {cost} ♦ возвращены.")
+                bot.send_message(chat_id, f"❌ Ошибка генерации. {cost} 🔷 возвращены.")
         bot.send_message(chat_id, "❌ Не удалось сгенерировать изображение.")
     send_main_menu(chat_id)
 
@@ -1011,13 +1021,13 @@ def handle_awaiting_prompt(message):
     with data_lock:
         if chat_id != ADMIN_ID:
             if user_credits.get(chat_id, 0) < cost:
-                bot.send_message(chat_id, f"❌ Недостаточно ♦. Нужно {cost} ♦.")
+                bot.send_message(chat_id, f"❌ Недостаточно 🔷. Нужно {cost} 🔷.")
                 send_main_menu(chat_id)
                 return
             user_credits[chat_id] -= cost
             user_credit_history[chat_id].append((time.time(), -cost, f"Редактирование {model}"))
             save_data()
-            bot.send_message(chat_id, f"✅ Списано {cost} ♦. Осталось: {user_credits[chat_id]}")
+            bot.send_message(chat_id, f"✅ Списано {cost} 🔷. Осталось: {user_credits[chat_id]}")
     bot.send_message(chat_id, f"🎨 Редактирую через {model}...")
     if model == "flux":
         img_data, error_msg = edit_image_flux(prompt, photo_base64)
@@ -1043,7 +1053,7 @@ def handle_awaiting_prompt(message):
                 user_credits[chat_id] += cost
                 user_credit_history[chat_id].append((time.time(), cost, f"Возврат за редактирование {model}"))
                 save_data()
-                bot.send_message(chat_id, f"❌ Ошибка редактирования. {cost} ♦ возвращены.")
+                bot.send_message(chat_id, f"❌ Ошибка редактирования. {cost} 🔷 возвращены.")
         bot.send_message(chat_id, f"❌ Не удалось отредактировать изображение.\n{error_msg}")
     else:
         with data_lock:
@@ -1051,7 +1061,7 @@ def handle_awaiting_prompt(message):
                 user_credits[chat_id] += cost
                 user_credit_history[chat_id].append((time.time(), cost, "Возврат за редактирование (пустой ответ)"))
                 save_data()
-                bot.send_message(chat_id, "❌ Не удалось отредактировать изображение. ♦ возвращены.")
+                bot.send_message(chat_id, "❌ Не удалось отредактировать изображение. 🔷 возвращены.")
     send_main_menu(chat_id)
 
 # ================== VIDEO PROMPT ==================
@@ -1101,7 +1111,7 @@ def handle_text_chat(message):
         if next_count >= 50:
             if user_credits.get(chat_id, 0) < CREDIT_COSTS["deepseek_session"]:
                 save_data()
-                bot.send_message(chat_id, "❌ Недостаточно ♦ для продолжения чата. Пополните баланс в магазине 💰.")
+                bot.send_message(chat_id, "❌ Недостаточно 🔷 для продолжения чата. Пополните баланс в магазине 💰.")
                 return
             pending_charge = True
         user_message_count[chat_id] = next_count
@@ -1113,12 +1123,12 @@ def handle_text_chat(message):
             user_credit_history[chat_id].append((time.time(), -CREDIT_COSTS["deepseek_session"], "Пакет из 50 сообщений DeepSeek"))
             user_message_count[chat_id] = 0
             save_data()
-        bot.send_message(chat_id, f"💬 Использовано 50 сообщений. Списано {CREDIT_COSTS['deepseek_session']} ♦. Осталось: {user_credits[chat_id]} ♦.")
+        bot.send_message(chat_id, f"💬 Использовано 50 сообщений. Списано {CREDIT_COSTS['deepseek_session']} 🔷. Осталось: {user_credits[chat_id]} 🔷.")
     elif pending_charge:
         with data_lock:
             user_message_count[chat_id] -= 1
             save_data()
-        bot.send_message(chat_id, "⚠️ Ошибка получения ответа. ♦ не списаны.")
+        bot.send_message(chat_id, "⚠️ Ошибка получения ответа. 🔷 не списаны.")
     bot.send_message(chat_id, reply, reply_markup=back_keyboard())
     with data_lock:
         save_data()
@@ -1151,7 +1161,6 @@ def static_files(filename):
 
 def set_webhook():
     try:
-        # Удаляем старый webhook + pending updates
         del_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteWebhook?drop_pending_updates=true"
         r = requests.get(del_url, timeout=10)
         print(f"deleteWebhook: {r.status_code} | {r.text}")
@@ -1172,9 +1181,9 @@ def set_webhook():
         print(f"setWebhook: {r.status_code} | {r.text}")
 
         if r.status_code == 200 and r.json().get("ok"):
-            print(f"✅ Webhook OK: {webhook_url}")
+            print(f"✅ Webhook OK")
         else:
-            print(f"❌ Webhook FAILED: {r.text}")
+            print(f"❌ Webhook FAILED")
     except Exception as e:
         print(f"❌ Webhook exception: {e}")
 
