@@ -1,4 +1,5 @@
 import os
+import sys
 import telebot
 import requests
 import time
@@ -31,6 +32,13 @@ ADMIN_ID = 534008787
 
 DATA_FILE = "bot_data.json"
 data_lock = Lock()
+
+# --- LOGGING ---
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    stream=sys.stdout
+)
 
 # --- DATA ---
 user_credits = defaultdict(int)
@@ -65,22 +73,25 @@ def load_data():
         headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
         try:
             r = requests.get(url, headers=headers, timeout=30)
+            logging.info(f"[LOAD] Gist GET {r.status_code}")
             if r.status_code == 200:
-                content = r.json()["files"]["bot_data.json"]["content"]
+                gist_data = r.json()
+                content = gist_data["files"]["bot_data.json"]["content"]
                 data = json.loads(content)
-                # Проверяем, что данные реально не пустые (хотя бы один пользователь есть)
+                logging.info(f"[LOAD] Raw Gist content: {str(data)[:200]}")
                 if data and isinstance(data, dict) and any([
                     data.get("credits"), data.get("history"), data.get("messages")
                 ]):
                     source = "Gist"
-                    print(f"[LOAD] Gist OK: {len(data.get('credits', {}))} users, {sum(data.get('credits', {}).values())} total credits")
+                    total_credits = sum(data.get("credits", {}).values())
+                    logging.info(f"[LOAD] Gist parsed OK: {len(data.get('credits', {}))} users, {total_credits} total credits")
                 else:
-                    print("[LOAD] Gist returned empty data, fallback to local")
+                    logging.info("[LOAD] Gist returned empty/invalid data, fallback to local")
                     data = None
             else:
-                print(f"[LOAD] Gist HTTP {r.status_code}, fallback to local")
+                logging.error(f"[LOAD] Gist HTTP {r.status_code}: {r.text[:300]}")
         except Exception as e:
-            print(f"[LOAD] Gist exception: {e}, fallback to local")
+            logging.error(f"[LOAD] Gist exception: {e}")
 
     # 2. Пробуем локальный файл
     if data is None:
@@ -88,19 +99,19 @@ def load_data():
             with open(DATA_FILE, "r", encoding="utf-8") as fh:
                 data = json.load(fh)
             source = "local file"
-            print(f"[LOAD] Local file OK: {len(data.get('credits', {}))} users")
+            logging.info(f"[LOAD] Local file OK: {len(data.get('credits', {}))} users")
         except FileNotFoundError:
-            print("[LOAD] No local file, starting fresh")
+            logging.info("[LOAD] No local file, starting fresh")
             data = {}
         except Exception as e:
-            print(f"[LOAD] Local file error: {e}")
+            logging.error(f"[LOAD] Local file error: {e}")
             data = {}
 
     user_credits = defaultdict(int, {int(k): v for k, v in data.get("credits", {}).items()})
     user_credit_history = defaultdict(list, {int(k): v for k, v in data.get("history", {}).items()})
     user_message_count = defaultdict(int, {int(k): v for k, v in data.get("messages", {}).items()})
     user_last_activity = defaultdict(float, {int(k): v for k, v in data.get("last_activity", {}).items()})
-    print(f"[LOAD] Final state from {source}: {sum(user_credits.values())} total credits")
+    logging.info(f"[LOAD] Final state from {source}: {sum(user_credits.values())} total credits")
 
 def save_data():
     with data_lock:
@@ -114,8 +125,9 @@ def save_data():
         try:
             with open(DATA_FILE, "w", encoding="utf-8") as fh:
                 json.dump(data, fh, ensure_ascii=False, indent=2)
+            logging.info("[SAVE] Local file OK")
         except Exception as e:
-            print(f"[SAVE] Local save error: {e}")
+            logging.error(f"[SAVE] Local file error: {e}")
 
         # Gist
         if GIST_ID and GITHUB_TOKEN:
@@ -123,20 +135,27 @@ def save_data():
                 url = f"https://api.github.com/gists/{GIST_ID}"
                 headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
                 payload = {"files": {"bot_data.json": {"content": json.dumps(data, ensure_ascii=False, indent=2)}}}
+                total_credits = sum(data["credits"].values())
+                logging.info(f"[SAVE] Sending to Gist: {len(data['credits'])} users, {total_credits} total credits")
                 r = requests.patch(url, json=payload, headers=headers, timeout=30)
+                logging.info(f"[SAVE] Gist response: {r.status_code} | {r.text[:300]}")
                 if r.status_code == 200:
-                    print(f"[SAVE] Gist OK: {len(data['credits'])} users, {sum(data['credits'].values())} total credits")
+                    logging.info("[SAVE] Gist OK")
                 else:
-                    print(f"[SAVE] Gist FAILED {r.status_code}: {r.text[:200]}")
+                    logging.error(f"[SAVE] Gist FAILED {r.status_code}")
             except Exception as e:
-                print(f"[SAVE] Gist exception: {e}")
+                logging.error(f"[SAVE] Gist exception: {e}")
+        else:
+            logging.warning(f"[SAVE] Skipped Gist: GIST_ID={'set' if GIST_ID else 'missing'}, GITHUB_TOKEN={'set' if GITHUB_TOKEN else 'missing'}")
+        
+        # Принудительный сброс буфера
+        sys.stdout.flush()
 
 load_data()
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 bot.request_timeout = 120
 app = Flask(__name__)
-logging.basicConfig(level=logging.INFO)
 
 os.makedirs("static", exist_ok=True)
 
@@ -167,9 +186,9 @@ def ask_deepseek(prompt):
         r = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=90)
         if r.status_code == 200:
             return r.json()["choices"][0]["message"]["content"]
-        print(f"DeepSeek error {r.status_code}: {r.text[:200]}")
+        logging.error(f"DeepSeek error {r.status_code}: {r.text[:200]}")
     except Exception as e:
-        print(f"DeepSeek exception: {e}")
+        logging.error(f"DeepSeek exception: {e}")
     return "⚠️ Ошибка соединения"
 
 # ================== IMAGE HELPERS ==================
@@ -212,7 +231,7 @@ def generate_image_flux(prompt):
         resp = requests.post(OPENROUTER_URL, json=payload, headers=_build_headers(), timeout=120)
         return _parse_image_response(resp)[0]
     except Exception as e:
-        print(f"Flux generation error: {e}")
+        logging.error(f"Flux generation error: {e}")
     return None
 
 def edit_image_flux(prompt, image_base64):
@@ -233,7 +252,7 @@ def edit_image_flux(prompt, image_base64):
         resp = requests.post(OPENROUTER_URL, json=payload, headers=_build_headers(), timeout=120)
         return _parse_image_response(resp)
     except Exception as e:
-        print(f"Flux edit error: {e}")
+        logging.error(f"Flux edit error: {e}")
     return None, str(e)
 
 # ================== SEEDREAM ==================
@@ -243,7 +262,7 @@ def generate_image_seedream(prompt):
         resp = requests.post(OPENROUTER_URL, json=payload, headers=_build_headers(), timeout=120)
         return _parse_image_response(resp)[0]
     except Exception as e:
-        print(f"Seedream generation error: {e}")
+        logging.error(f"Seedream generation error: {e}")
     return None
 
 def edit_image_seedream(prompt, image_base64):
@@ -264,7 +283,7 @@ def edit_image_seedream(prompt, image_base64):
         resp = requests.post(OPENROUTER_URL, json=payload, headers=_build_headers(), timeout=120)
         return _parse_image_response(resp)
     except Exception as e:
-        print(f"Seedream edit error: {e}")
+        logging.error(f"Seedream edit error: {e}")
     return None, str(e)
 
 # ================== VIDEO ==================
@@ -277,7 +296,7 @@ def compress_image_if_needed(b64_str, max_size=(640, 640), quality=80):
         img.convert("RGB").save(buf, format="JPEG", quality=quality)
         return base64.b64encode(buf.getvalue()).decode()
     except Exception as e:
-        print(f"Compress error: {e}")
+        logging.error(f"Compress error: {e}")
         return b64_str
 
 def _is_valid_mp4(data):
@@ -293,14 +312,14 @@ def _send_video_safe(chat_id, data, caption="✅ Ваше видео готов�
             user_video_history[chat_id].pop(0)
         return True
     except Exception as e:
-        print(f"send_video error: {e}")
+        logging.error(f"send_video error: {e}")
         try:
             doc_file = io.BytesIO(data)
             doc_file.name = "video.mp4"
             bot.send_document(chat_id, doc_file, caption="✅ Видео (как файл)")
             return True
         except Exception as e2:
-            print(f"send_document error: {e2}")
+            logging.error(f"send_document error: {e2}")
             return False
 
 def poll_video_task(polling_url, headers, chat_id, status_message_id, model_display=""):
@@ -388,7 +407,7 @@ def generate_video_async(chat_id, prompt, first_frame_b64=None, last_frame_b64=N
         frame_images.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{compress_image_if_needed(last_frame_b64)}"}, "frame_type": "last_frame"})
     if frame_images:
         payload["frame_images"] = frame_images
-    print(f"Video payload: {json.dumps({k: v for k, v in payload.items() if k != 'frame_images'})}")
+    logging.info(f"Video payload: {json.dumps({k: v for k, v in payload.items() if k != 'frame_images'})}")
     try:
         resp = requests.post(OPENROUTER_VIDEO_URL, json=payload, headers=headers, timeout=60)
         if resp.status_code not in (200, 202):
@@ -421,7 +440,7 @@ def generate_video_async(chat_id, prompt, first_frame_b64=None, last_frame_b64=N
                 save_data()
         bot.send_message(chat_id, "❌ Пустой ответ. 🔷 возвращены.")
     except Exception as e:
-        print(f"Video exception: {e}")
+        logging.error(f"Video exception: {e}")
         with data_lock:
             if chat_id != ADMIN_ID:
                 user_credits[chat_id] += cost
@@ -559,7 +578,7 @@ def initiate_stars_payment(call):
         )
         bot.answer_callback_query(call.id, "Счёт отправлен. Оплатите через Telegram Stars.")
     except Exception as e:
-        print(f"Invoice error: {e}")
+        logging.error(f"Invoice error: {e}")
         bot.send_message(chat_id, f"❌ Ошибка при создании счёта: {e}")
 
 @bot.pre_checkout_query_handler(func=lambda query: True)
@@ -617,7 +636,7 @@ def handle_card_payment(call):
             reply_markup=markup,
         )
     except Exception as e:
-        print(f"Admin notify error: {e}")
+        logging.error(f"Admin notify error: {e}")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("admin_grant_"))
 def admin_grant_credits(call):
@@ -647,7 +666,7 @@ def admin_grant_credits(call):
     try:
         bot.send_message(target_id, f"🎉 Администратор начислил вам {pkg['credits']} 🔷 (пакет «{pkg['name']}»).\nВаш баланс: {user_credits[target_id]} 🔷")
     except Exception as e:
-        print(f"Не удалось уведомить {target_id}: {e}")
+        logging.error(f"Не удалось уведомить {target_id}: {e}")
 
 @bot.message_handler(commands=["paysupport"])
 def pay_support(message):
@@ -674,11 +693,23 @@ def add_credits(message):
             user_credits[uid] = user_credits.get(uid, 0) + amt
             user_credit_history[uid].append((time.time(), amt, "Начисление админом"))
             save_data()
-        bot.send_message(message.chat.id, f"🎉 Готово! {amt} 🔷 зачислены пользователю {uid}. Текущий баланс: {user_credits[uid]}.")
+        
+        # Явное подтверждение с балансом
+        current_balance = user_credits[uid]
+        history_count = len(user_credit_history[uid])
+        confirm_text = (
+            f"✅ <b>Начисление выполнено</b>\n\n"
+            f"👤 Пользователь: <code>{uid}</code>\n"
+            f"➕ Начислено: {amt} 🔷\n"
+            f"💰 Текущий баланс: {current_balance} 🔷\n"
+            f"📋 Всего операций: {history_count}"
+        )
+        bot.send_message(message.chat.id, confirm_text, parse_mode="HTML")
+        
         try:
-            bot.send_message(uid, f"🎉 Администратор начислил вам {amt} 🔷. Ваш баланс: {user_credits[uid]}")
+            bot.send_message(uid, f"🎉 Администратор начислил вам {amt} 🔷.\nВаш баланс: {current_balance} 🔷")
         except Exception as e:
-            print(f"Не удалось уведомить {uid}: {e}")
+            logging.error(f"Не удалось уведомить {uid}: {e}")
     except Exception:
         bot.send_message(message.chat.id, "Формат: /addcredits <user_id> <amount>")
 
@@ -694,15 +725,15 @@ def remove_credits(message):
                 user_credits[uid] -= amt
                 user_credit_history[uid].append((time.time(), -amt, "Списание админом"))
                 save_data()
-                bot.send_message(message.chat.id, f"✅ Списано {amt} 🔷 у {uid}")
+                bot.send_message(message.chat.id, f"✅ Списано {amt} 🔷 у {uid}\nТекущий баланс: {user_credits[uid]} 🔷")
                 try:
                     bot.send_message(uid, f"ℹ️ Администратор списал {amt} 🔷. Баланс: {user_credits[uid]}")
                 except Exception as e:
-                    print(f"Не удалось уведомить {uid}: {e}")
+                    logging.error(f"Не удалось уведомить {uid}: {e}")
             else:
                 bot.send_message(message.chat.id, "Недостаточно 🔷")
     except Exception as e:
-        print(f"Remove credits error: {e}")
+        logging.error(f"Remove credits error: {e}")
         bot.send_message(message.chat.id, "Формат: /removecredits <user_id> <amount>")
 
 # ================== START & MENU ==================
@@ -979,7 +1010,7 @@ def handle_generate_prompt(message):
             img.save(buf, format="JPEG", quality=85)
             bot.send_photo(chat_id, buf.getvalue(), caption="✅ Готово!")
         except Exception as e:
-            print(f"Image send error: {e}")
+            logging.error(f"Image send error: {e}")
             bot.send_document(chat_id, img_data, caption="✅ Готово (файл)")
     else:
         with data_lock:
@@ -1045,7 +1076,7 @@ def handle_awaiting_prompt(message):
             img.save(buf, format="JPEG", quality=85)
             bot.send_photo(chat_id, buf.getvalue(), caption=caption)
         except Exception as e:
-            print(f"Edit image send error: {e}")
+            logging.error(f"Edit image send error: {e}")
             bot.send_document(chat_id, img_data, caption=caption)
     elif error_msg:
         with data_lock:
@@ -1071,8 +1102,8 @@ def handle_video_prompt(message):
     user_last_activity[chat_id] = time.time()
     prompt = message.text
     user_state[chat_id] = None
-    print(f"=== VIDEO START {chat_id} ===")
-    print(f"Prompt: {prompt}")
+    logging.info(f"=== VIDEO START {chat_id} ===")
+    logging.info(f"Prompt: {prompt}")
     first_frame = user_video_frames.get(chat_id, {}).get("first")
     last_frame = user_video_frames.get(chat_id, {}).get("last")
     user_video_frames.pop(chat_id, None)
@@ -1151,7 +1182,7 @@ def webhook():
             bot.process_new_updates([update])
             return "OK", 200
         except Exception as e:
-            print(f"Webhook processing error: {e}")
+            logging.error(f"Webhook processing error: {e}")
             return "Bad Request", 400
     return "Forbidden", 403
 
@@ -1163,7 +1194,7 @@ def set_webhook():
     try:
         del_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteWebhook?drop_pending_updates=true"
         r = requests.get(del_url, timeout=10)
-        print(f"deleteWebhook: {r.status_code} | {r.text}")
+        logging.info(f"deleteWebhook: {r.status_code} | {r.text}")
 
         time.sleep(1)
 
@@ -1172,23 +1203,23 @@ def set_webhook():
             host = os.getenv("WEBHOOK_HOST")
 
         if not host:
-            print("ERROR: RENDER_EXTERNAL_HOSTNAME or WEBHOOK_HOST not set!")
+            logging.error("ERROR: RENDER_EXTERNAL_HOSTNAME or WEBHOOK_HOST not set!")
             return
 
         webhook_url = f"https://{host}/{TELEGRAM_TOKEN}"
         set_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook?url={webhook_url}"
         r = requests.get(set_url, timeout=10)
-        print(f"setWebhook: {r.status_code} | {r.text}")
+        logging.info(f"setWebhook: {r.status_code} | {r.text}")
 
         if r.status_code == 200 and r.json().get("ok"):
-            print(f"✅ Webhook OK")
+            logging.info("✅ Webhook OK")
         else:
-            print(f"❌ Webhook FAILED")
+            logging.error("❌ Webhook FAILED")
     except Exception as e:
-        print(f"❌ Webhook exception: {e}")
+        logging.error(f"❌ Webhook exception: {e}")
 
 if __name__ == "__main__":
     set_webhook()
     port = int(os.environ.get("PORT", 8080))
-    print(f"Starting Flask on port {port}...")
+    logging.info(f"Starting Flask on port {port}...")
     app.run(host="0.0.0.0", port=port)
