@@ -9,7 +9,7 @@ import urllib3
 import json
 import logging
 from html import escape
-from flask import Flask, send_from_directory
+from flask import Flask, request, send_from_directory
 from threading import Thread, Lock
 from telebot.types import (ReplyKeyboardMarkup, KeyboardButton,
                            InlineKeyboardMarkup, InlineKeyboardButton,
@@ -513,8 +513,8 @@ def shop(message):
     chat_id = message.chat.id
     user_last_activity[chat_id] = time.time()
     text = (
-        "🛒 <b>Магазин для покупки 🔷</b>\n"
-        "🔷 - токены для генерации\n"
+        "🛒 <b>Магазин 🔷</b>\n"
+        "1 🔷 позволяет:\n"
         "• Генерация (Flux/Seedream) — 2 🔷\n"
         "• Редактирование (Flux/Seedream) — 3 🔷\n"
         "• Видео 5 сек — 25 🔷, 10 сек — 50 🔷, 15 сек — 100 🔷\n"
@@ -1134,29 +1134,38 @@ def handle_text_chat(message):
 def handle_other(message):
     bot.send_message(message.chat.id, "Пожалуйста, используй кнопки меню.")
 
-# ================== RUN ==================
-@app.route("/static/<path:filename>")
-def static_files(filename):
-    return send_from_directory("static", filename)
-
-def run_bot():
-    logging.info("✅ Бот запущен")
-    try:
-        bot.remove_webhook()
-        time.sleep(1)
-    except Exception:
-        pass
-    while True:
-        try:
-            bot.infinity_polling(timeout=60, long_polling_timeout=60)
-        except Exception as e:
-            logging.error(f"Polling error: {e}")
-            time.sleep(10)
-
+# ================== WEBHOOK ROUTES ==================
 @app.route("/")
 def index():
     return "Bot is running"
 
+@app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
+def webhook():
+    if request.headers.get("content-type") == "application/json":
+        json_string = request.get_data().decode("utf-8")
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return "OK", 200
+    return "Forbidden", 403
+
+@app.route("/static/<path:filename>")
+def static_files(filename):
+    return send_from_directory("static", filename)
+
+def set_webhook():
+    try:
+        bot.remove_webhook()
+        time.sleep(1)
+        host = os.getenv("RENDER_EXTERNAL_HOSTNAME")
+        if not host:
+            host = os.getenv("WEBHOOK_HOST", "your-service.onrender.com")
+        webhook_url = f"https://{host}/{TELEGRAM_TOKEN}"
+        bot.set_webhook(url=webhook_url)
+        logging.info(f"✅ Webhook установлен: {webhook_url}")
+    except Exception as e:
+        logging.error(f"❌ Ошибка установки webhook: {e}")
+
+# ================== RUN ==================
 if __name__ == "__main__":
-    Thread(target=run_bot, daemon=True).start()
+    set_webhook()
     app.run(host="0.0.0.0", port=8080)
