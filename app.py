@@ -123,9 +123,9 @@ VIDEO_MODEL_FEATURES = {
 }
 
 PACKAGES = {
-    "start": {"name": "Старт", "credits": 50, "price": 250, "desc": "50 кредитов на любые операции"},
-    "optima": {"name": "Оптима", "credits": 150, "price": 625, "desc": "150 кредитов (выгоднее)"},
-    "maxi": {"name": "Макси", "credits": 400, "price": 1500, "desc": "400 кредитов (максимальная выгода)"},
+    "start": {"name": "Старт", "credits": 50, "price_stars": 250, "price_rub": 400, "desc": "50 🔷 на любые операции"},
+    "optima": {"name": "Оптима", "credits": 150, "price_stars": 625, "price_rub": 1000, "desc": "150 🔷 (выгоднее)"},
+    "maxi": {"name": "Макси", "credits": 400, "price_stars": 1500, "price_rub": 2400, "desc": "400 🔷 (максимальная выгода)"},
 }
 
 CREDIT_COSTS = {
@@ -328,12 +328,12 @@ def generate_video_async(chat_id, prompt, first_frame_b64=None, last_frame_b64=N
     with data_lock:
         if chat_id != ADMIN_ID:
             if user_credits.get(chat_id, 0) < cost:
-                bot.send_message(chat_id, f"❌ Недостаточно кредитов. Нужно {cost}, у вас {user_credits.get(chat_id, 0)}. Пополните баланс в магазине 💰.")
+                bot.send_message(chat_id, f"❌ Недостаточно 🔷. Нужно {cost}, у вас {user_credits.get(chat_id, 0)}. Пополните баланс в магазине 💰.")
                 return False
             user_credits[chat_id] -= cost
             user_credit_history[chat_id].append((time.time(), -cost, f"Видео {duration}с"))
             save_data()
-            bot.send_message(chat_id, f"✅ Списано {cost} кредит(ов). Осталось: {user_credits[chat_id]}")
+            bot.send_message(chat_id, f"✅ Списано {cost} 🔷. Осталось: {user_credits[chat_id]}")
     params = user_video_params.get(chat_id, {})
     resolution = params.get("resolution", "480p")
     audio = params.get("audio", True)
@@ -373,7 +373,7 @@ def generate_video_async(chat_id, prompt, first_frame_b64=None, last_frame_b64=N
                     user_credits[chat_id] = user_credits.get(chat_id, 0) + cost
                     user_credit_history[chat_id].append((time.time(), cost, "Возврат за видео"))
                     save_data()
-            bot.send_message(chat_id, f"❌ Ошибка {resp.status_code}. Кредиты возвращены.")
+            bot.send_message(chat_id, f"❌ Ошибка {resp.status_code}. 🔷 возвращены.")
             return False
         data = resp.json()
         if "polling_url" in data:
@@ -395,7 +395,7 @@ def generate_video_async(chat_id, prompt, first_frame_b64=None, last_frame_b64=N
                 user_credits[chat_id] += cost
                 user_credit_history[chat_id].append((time.time(), cost, "Возврат за видео"))
                 save_data()
-        bot.send_message(chat_id, "❌ Пустой ответ. Кредиты возвращены.")
+        bot.send_message(chat_id, "❌ Пустой ответ. 🔷 возвращены.")
     except Exception as e:
         logging.error(f"Video exception: {e}")
         with data_lock:
@@ -403,7 +403,7 @@ def generate_video_async(chat_id, prompt, first_frame_b64=None, last_frame_b64=N
                 user_credits[chat_id] += cost
                 user_credit_history[chat_id].append((time.time(), cost, "Возврат за видео (ошибка)"))
                 save_data()
-        bot.send_message(chat_id, "❌ Ошибка связи. Кредиты возвращены.")
+        bot.send_message(chat_id, "❌ Ошибка связи. 🔷 возвращены.")
     return False
 
 # ================== KEYBOARDS ==================
@@ -471,12 +471,12 @@ def profile(message):
     user_last_activity[chat_id] = time.time()
     credits = user_credits.get(chat_id, 0)
     history = user_credit_history.get(chat_id, [])
-    text = f"👤 <b>Ваш профиль</b>\n\n💰 Баланс: {credits} кредитов\n\n"
+    text = f"👤 <b>Ваш профиль</b>\n\n💰 Баланс: {credits} 🔷\n\n"
     if history:
         text += "📋 <b>Последние операции:</b>\n"
         for ts, delta, reason in history[-5:]:
             sign = "+" if delta > 0 else ""
-            text += f"{sign}{delta} кр. – {escape(reason)}\n"
+            text += f"{sign}{delta} 🔷 – {escape(reason)}\n"
     else:
         text += "📋 <b>Операций пока нет.</b>"
     markup = InlineKeyboardMarkup()
@@ -494,24 +494,30 @@ def shop(message):
     chat_id = message.chat.id
     user_last_activity[chat_id] = time.time()
     text = (
-        "🛒 <b>Магазин кредитов</b>\n"
-        "1 кредит позволяет:\n"
-        "• Генерация (Flux/Seedream) — 2 кредита\n"
-        "• Редактирование (Flux/Seedream) — 3 кредита\n"
-        "• Видео 5 сек — 25 кр., 10 сек — 50 кр., 15 сек — 100 кр.\n"
-        "• Чат с ИИ — 1 кредит за 50 сообщений\n\n"
+        "🛒 <b>Магазин 🔷</b>\n"
+        "1 🔷 позволяет:\n"
+        "• Генерация (Flux/Seedream) — 2 🔷\n"
+        "• Редактирование (Flux/Seedream) — 3 🔷\n"
+        "• Видео 5 сек — 25 🔷, 10 сек — 50 🔷, 15 сек — 100 🔷\n"
+        "• Чат с ИИ — 1 🔷 за 50 сообщений\n\n"
         "Выберите пакет:"
     )
-    markup = InlineKeyboardMarkup(row_width=1)
     for key, pkg in PACKAGES.items():
-        text += f"\n<b>{escape(pkg['name'])}</b>: {pkg['credits']} кредитов — {pkg['price']} ⭐️"
-        markup.add(InlineKeyboardButton(f"Купить {escape(pkg['name'])} — {pkg['price']} ⭐️", callback_data=f"buy_{key}"))
-    bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
+        text += f"\n<b>{escape(pkg['name'])}</b>: {pkg['credits']} 🔷 — {pkg['price_stars']} ⭐️ / {pkg['price_rub']} ₽"
+    bot.send_message(chat_id, text, parse_mode="HTML")
+    markup = InlineKeyboardMarkup(row_width=2)
+    for key, pkg in PACKAGES.items():
+        markup.add(
+            InlineKeyboardButton(f"{pkg['name']} ⭐️ {pkg['price_stars']}", callback_data=f"buy_stars_{key}"),
+            InlineKeyboardButton(f"{pkg['name']} 💳 {pkg['price_rub']}₽", callback_data=f"buy_card_{key}"),
+        )
+    bot.send_message(chat_id, "Оплата Stars (Telegram) или перевод на карту:", reply_markup=markup)
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("buy_"))
-def initiate_payment(call):
+# --- STARS PAYMENT ---
+@bot.callback_query_handler(func=lambda call: call.data.startswith("buy_stars_"))
+def initiate_stars_payment(call):
     chat_id = call.message.chat.id
-    pkg_key = call.data[4:]
+    pkg_key = call.data[10:]
     pkg = PACKAGES.get(pkg_key)
     if not pkg:
         bot.answer_callback_query(call.id, "Ошибка пакета")
@@ -523,7 +529,7 @@ def initiate_payment(call):
             description=pkg["desc"],
             provider_token="",
             currency="XTR",
-            prices=[LabeledPrice(label="XTR", amount=pkg["price"])],
+            prices=[LabeledPrice(label="XTR", amount=pkg["price_stars"])],
             start_parameter="shop",
             invoice_payload=f"package_{pkg_key}",
         )
@@ -544,9 +550,82 @@ def process_payment(message):
     if pkg:
         with data_lock:
             user_credits[chat_id] = user_credits.get(chat_id, 0) + pkg["credits"]
-            user_credit_history[chat_id].append((time.time(), pkg["credits"], f"Покупка пакета {pkg['name']}"))
+            user_credit_history[chat_id].append((time.time(), pkg["credits"], f"Покупка пакета {pkg['name']} (Stars)"))
             save_data()
-        bot.send_message(chat_id, f"✅ Оплата прошла! Начислено {pkg['credits']} кредитов.\nБаланс: {user_credits[chat_id]} кредитов")
+        bot.send_message(chat_id, f"✅ Оплата прошла! Начислено {pkg['credits']} 🔷.\nБаланс: {user_credits[chat_id]} 🔷")
+
+# --- CARD PAYMENT (manual) ---
+@bot.callback_query_handler(func=lambda call: call.data.startswith("buy_card_"))
+def handle_card_payment(call):
+    chat_id = call.message.chat.id
+    pkg_key = call.data[9:]
+    pkg = PACKAGES.get(pkg_key)
+    if not pkg:
+        bot.answer_callback_query(call.id, "Ошибка пакета")
+        return
+    user = call.from_user
+    username = f"@{user.username}" if user.username else "без username"
+    # Notify user
+    bot.send_message(
+        chat_id,
+        f"💳 <b>Оплата картой — пакет «{pkg['name']}»</b>\n\n"
+        f"Сумма: <b>{pkg['price_rub']} ₽</b>\n"
+        f"Вы получите: <b>{pkg['credits']} 🔷</b>\n\n"
+        f"Переведите сумму на Т-Банк / СБЕР по номеру:\n"
+        f"<code>+79192329005</code>\n\n"
+        f"❗️ <b>Укажите в комментарии к переводу ваш Telegram ID:</b>\n"
+        f"<code>{chat_id}</code>\n\n"
+        f"После перевода 🔷 начислятся вручную в течение 15 минут.",
+        parse_mode="HTML",
+    )
+    bot.answer_callback_query(call.id, "Реквизиты отправлены")
+    # Notify admin
+    try:
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton(f"✅ Начислить {pkg['credits']}🔷", callback_data=f"admin_grant_{chat_id}_{pkg_key}"))
+        bot.send_message(
+            ADMIN_ID,
+            f"💳 <b>Запрос на оплату картой</b>\n\n"
+            f"Пользователь: {username}\n"
+            f"ID: <code>{chat_id}</code>\n"
+            f"Пакет: <b>{pkg['name']}</b>\n"
+            f"Сумма: {pkg['price_rub']} ₽\n"
+            f"🔷: {pkg['credits']}",
+            parse_mode="HTML",
+            reply_markup=markup,
+        )
+    except Exception as e:
+        logging.error(f"Admin notify error: {e}")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("admin_grant_"))
+def admin_grant_credits(call):
+    if call.from_user.id != ADMIN_ID:
+        bot.answer_callback_query(call.id, "Нет доступа")
+        return
+    parts = call.data.split("_")
+    if len(parts) < 4:
+        bot.answer_callback_query(call.id, "Ошибка данных")
+        return
+    target_id = int(parts[2])
+    pkg_key = parts[3]
+    pkg = PACKAGES.get(pkg_key)
+    if not pkg:
+        bot.answer_callback_query(call.id, "Ошибка пакета")
+        return
+    with data_lock:
+        user_credits[target_id] = user_credits.get(target_id, 0) + pkg["credits"]
+        user_credit_history[target_id].append((time.time(), pkg["credits"], f"Покупка пакета {pkg['name']} (карта)"))
+        save_data()
+    bot.answer_callback_query(call.id, f"Начислено {pkg['credits']} 🔷")
+    bot.edit_message_text(
+        f"✅ <b>Начислено</b>\nПользователю {target_id}: +{pkg['credits']} 🔷",
+        call.message.chat.id,
+        call.message.message_id,
+    )
+    try:
+        bot.send_message(target_id, f"🎉 Администратор начислил вам {pkg['credits']} 🔷 (пакет «{pkg['name']}»).\nВаш баланс: {user_credits[target_id]} 🔷")
+    except Exception as e:
+        logging.warning(f"Не удалось уведомить {target_id}: {e}")
 
 @bot.message_handler(commands=["paysupport"])
 def pay_support(message):
@@ -559,7 +638,7 @@ def admin_panel(message):
         return
     with data_lock:
         total_credits = sum(user_credits.values())
-    text = f"👑 Админ-панель\nПользователей: {len(user_credits)}\nКредитов всего: {total_credits}\n\nКоманды:\n/addcredits <id> <amount>\n/removecredits <id> <amount>"
+    text = f"👑 Админ-панель\nПользователей: {len(user_credits)}\n🔷 всего: {total_credits}\n\nКоманды:\n/addcredits <id> <amount>\n/removecredits <id> <amount>"
     bot.send_message(message.chat.id, text)
 
 @bot.message_handler(commands=["addcredits"])
@@ -573,9 +652,9 @@ def add_credits(message):
             user_credits[uid] = user_credits.get(uid, 0) + amt
             user_credit_history[uid].append((time.time(), amt, "Начисление админом"))
             save_data()
-        bot.send_message(message.chat.id, f"🎉 Готово! {amt} кредитов зачислены пользователю {uid}. Текущий баланс: {user_credits[uid]}.")
+        bot.send_message(message.chat.id, f"🎉 Готово! {amt} 🔷 зачислены пользователю {uid}. Текущий баланс: {user_credits[uid]}.")
         try:
-            bot.send_message(uid, f"🎉 Администратор начислил вам {amt} кредитов. Ваш баланс: {user_credits[uid]}")
+            bot.send_message(uid, f"🎉 Администратор начислил вам {amt} 🔷. Ваш баланс: {user_credits[uid]}")
         except Exception as e:
             logging.warning(f"Не удалось уведомить {uid}: {e}")
     except Exception:
@@ -593,13 +672,13 @@ def remove_credits(message):
                 user_credits[uid] -= amt
                 user_credit_history[uid].append((time.time(), -amt, "Списание админом"))
                 save_data()
-                bot.send_message(message.chat.id, f"✅ Списано {amt} кредитов у {uid}")
+                bot.send_message(message.chat.id, f"✅ Списано {amt} 🔷 у {uid}")
                 try:
-                    bot.send_message(uid, f"ℹ️ Администратор списал {amt} кредитов. Баланс: {user_credits[uid]}")
+                    bot.send_message(uid, f"ℹ️ Администратор списал {amt} 🔷. Баланс: {user_credits[uid]}")
                 except Exception as e:
                     logging.warning(f"Не удалось уведомить {uid}: {e}")
             else:
-                bot.send_message(message.chat.id, "Недостаточно кредитов")
+                bot.send_message(message.chat.id, "Недостаточно 🔷")
     except Exception as e:
         logging.error(f"Remove credits error: {e}")
         bot.send_message(message.chat.id, "Формат: /removecredits <user_id> <amount>")
@@ -622,8 +701,8 @@ def menu_generate_image(message):
     user_state[chat_id] = "select_model_generate"
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
-        InlineKeyboardButton("🌊 Flux Pro (2 кр.)", callback_data="gen_flux"),
-        InlineKeyboardButton("🎨 Seedream 4.5 (2 кр.)", callback_data="gen_seedream"),
+        InlineKeyboardButton("🌊 Flux (2🔷)", callback_data="gen_flux"),
+        InlineKeyboardButton("🎨 Seedream (2🔷)", callback_data="gen_seedream"),
     )
     bot.send_message(message.chat.id, "Выбери модель для генерации:", reply_markup=markup)
 
@@ -634,8 +713,8 @@ def menu_edit_photo(message):
     user_state[chat_id] = "select_model_edit"
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
-        InlineKeyboardButton("🌊 Flux Pro (3 кр.)", callback_data="edit_flux"),
-        InlineKeyboardButton("🎨 Seedream 4.5 (3 кр.)", callback_data="edit_seedream"),
+        InlineKeyboardButton("🌊 Flux (3🔷)", callback_data="edit_flux"),
+        InlineKeyboardButton("🎨 Seedream (3🔷)", callback_data="edit_seedream"),
     )
     bot.send_message(message.chat.id, "Выбери модель редактирования:", reply_markup=markup)
 
@@ -656,7 +735,7 @@ def menu_chat(message):
     chat_id = message.chat.id
     user_last_activity[chat_id] = time.time()
     user_state[chat_id] = None
-    bot.send_message(message.chat.id, "Задай любой вопрос (DeepSeek V4 Pro). Каждые 50 сообщений списывается 1 кредит.", reply_markup=back_keyboard())
+    bot.send_message(message.chat.id, "Задай любой вопрос (DeepSeek V4 Pro). Каждые 50 сообщений списывается 1 🔷.", reply_markup=back_keyboard())
 
 @bot.message_handler(func=lambda m: m.text == "👤 Профиль")
 def menu_profile(message):
@@ -857,13 +936,13 @@ def handle_generate_prompt(message):
     with data_lock:
         if chat_id != ADMIN_ID:
             if user_credits.get(chat_id, 0) < cost:
-                bot.send_message(chat_id, f"❌ Недостаточно кредитов. Нужно {cost} кредита.")
+                bot.send_message(chat_id, f"❌ Недостаточно 🔷. Нужно {cost} 🔷.")
                 send_main_menu(chat_id)
                 return
             user_credits[chat_id] -= cost
             user_credit_history[chat_id].append((time.time(), -cost, f"Генерация {model}"))
             save_data()
-            bot.send_message(chat_id, f"✅ Списано {cost} кредита. Осталось: {user_credits[chat_id]}")
+            bot.send_message(chat_id, f"✅ Списано {cost} 🔷. Осталось: {user_credits[chat_id]}")
     bot.send_message(chat_id, f"🎨 Генерирую через {model}...")
     if model == "flux":
         img_data = generate_image_flux(prompt)
@@ -886,7 +965,7 @@ def handle_generate_prompt(message):
                 user_credits[chat_id] += cost
                 user_credit_history[chat_id].append((time.time(), cost, f"Возврат за генерацию {model}"))
                 save_data()
-                bot.send_message(chat_id, f"❌ Ошибка генерации. {cost} кредит возвращён.")
+                bot.send_message(chat_id, f"❌ Ошибка генерации. {cost} 🔷 возвращены.")
         bot.send_message(chat_id, "❌ Не удалось сгенерировать изображение.")
     send_main_menu(chat_id)
 
@@ -920,13 +999,13 @@ def handle_awaiting_prompt(message):
     with data_lock:
         if chat_id != ADMIN_ID:
             if user_credits.get(chat_id, 0) < cost:
-                bot.send_message(chat_id, f"❌ Недостаточно кредитов. Нужно {cost} кредита.")
+                bot.send_message(chat_id, f"❌ Недостаточно 🔷. Нужно {cost} 🔷.")
                 send_main_menu(chat_id)
                 return
             user_credits[chat_id] -= cost
             user_credit_history[chat_id].append((time.time(), -cost, f"Редактирование {model}"))
             save_data()
-            bot.send_message(chat_id, f"✅ Списано {cost} кредита. Осталось: {user_credits[chat_id]}")
+            bot.send_message(chat_id, f"✅ Списано {cost} 🔷. Осталось: {user_credits[chat_id]}")
     bot.send_message(chat_id, f"🎨 Редактирую через {model}...")
     if model == "flux":
         img_data, error_msg = edit_image_flux(prompt, photo_base64)
@@ -952,7 +1031,7 @@ def handle_awaiting_prompt(message):
                 user_credits[chat_id] += cost
                 user_credit_history[chat_id].append((time.time(), cost, f"Возврат за редактирование {model}"))
                 save_data()
-                bot.send_message(chat_id, f"❌ Ошибка редактирования. {cost} кредит возвращён.")
+                bot.send_message(chat_id, f"❌ Ошибка редактирования. {cost} 🔷 возвращены.")
         bot.send_message(chat_id, f"❌ Не удалось отредактировать изображение.\n{error_msg}")
     else:
         with data_lock:
@@ -960,7 +1039,7 @@ def handle_awaiting_prompt(message):
                 user_credits[chat_id] += cost
                 user_credit_history[chat_id].append((time.time(), cost, "Возврат за редактирование (пустой ответ)"))
                 save_data()
-                bot.send_message(chat_id, "❌ Не удалось отредактировать изображение. Кредит возвращён.")
+                bot.send_message(chat_id, "❌ Не удалось отредактировать изображение. 🔷 возвращены.")
     send_main_menu(chat_id)
 
 # ================== VIDEO PROMPT ==================
@@ -1010,7 +1089,7 @@ def handle_text_chat(message):
         if next_count >= 50:
             if user_credits.get(chat_id, 0) < CREDIT_COSTS["deepseek_session"]:
                 save_data()
-                bot.send_message(chat_id, "❌ Недостаточно кредитов для продолжения чата. Пополните баланс в магазине 💰.")
+                bot.send_message(chat_id, "❌ Недостаточно 🔷 для продолжения чата. Пополните баланс в магазине 💰.")
                 return
             pending_charge = True
         user_message_count[chat_id] = next_count
@@ -1022,12 +1101,12 @@ def handle_text_chat(message):
             user_credit_history[chat_id].append((time.time(), -CREDIT_COSTS["deepseek_session"], "Пакет из 50 сообщений DeepSeek"))
             user_message_count[chat_id] = 0
             save_data()
-        bot.send_message(chat_id, f"💬 Использовано 50 сообщений. Списано {CREDIT_COSTS['deepseek_session']} кредит. Осталось: {user_credits[chat_id]} кредитов.")
+        bot.send_message(chat_id, f"💬 Использовано 50 сообщений. Списано {CREDIT_COSTS['deepseek_session']} 🔷. Осталось: {user_credits[chat_id]} 🔷.")
     elif pending_charge:
         with data_lock:
             user_message_count[chat_id] -= 1
             save_data()
-        bot.send_message(chat_id, "⚠️ Ошибка получения ответа. Кредит не списан.")
+        bot.send_message(chat_id, "⚠️ Ошибка получения ответа. 🔷 не списаны.")
     bot.send_message(chat_id, reply, reply_markup=back_keyboard())
     with data_lock:
         save_data()
