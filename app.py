@@ -148,25 +148,6 @@ def ask_deepseek(prompt):
         logging.error(f"DeepSeek exception: {e}")
     return "⚠️ Ошибка соединения"
 
-
-# ================== OPENROUTER BALANCE ==================
-def get_openrouter_balance():
-    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
-    try:
-        r = requests.get("https://openrouter.ai/api/v1/auth/credits", headers=headers, timeout=10)
-        if r.status_code == 200:
-            data = r.json().get("data", {})
-            total = data.get("total_credits", 0)
-            used = data.get("total_usage", 0)
-            remaining = total - used
-            return remaining, total, used
-        else:
-            logging.error(f"OpenRouter balance error {r.status_code}: {r.text[:200]}")
-            return None, None, None
-    except Exception as e:
-        logging.error(f"OpenRouter balance exception: {e}")
-        return None, None, None
-
 # ================== IMAGE HELPERS ==================
 def _safe_resample():
     try:
@@ -513,10 +494,10 @@ def shop(message):
     chat_id = message.chat.id
     user_last_activity[chat_id] = time.time()
     text = (
-        "🛒 <b>Магазин 🔷</b>\n"
-        "1 🔷 позволяет:\n"
+        "🛒 <b>Магазин для покупки 🔷</b>\n"
+        " 🔷 - токены для генерации\n"
         "• Генерация (Flux/Seedream) — 2 🔷\n"
-        "• Редактирование (Flux/Seedream) — 3 🔷\n"
+        "• Редактирование фото (Flux/Seedream) — 3 🔷\n"
         "• Видео 5 сек — 25 🔷, 10 сек — 50 🔷, 15 сек — 100 🔷\n"
         "• Чат с ИИ — 1 🔷 за 50 сообщений\n\n"
         "Выберите пакет:"
