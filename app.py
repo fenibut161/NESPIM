@@ -314,6 +314,7 @@ def generate_video_async(chat_id, prompt, first_frame_b64=None, last_frame_b64=N
     duration = user_video_params.get(chat_id, {}).get('duration', 5)
     cost = CREDIT_COSTS['video'].get(duration, 25)
 
+    # Проверка и списание кредитов для обычных пользователей
     if chat_id != ADMIN_ID:
         if user_credits.get(chat_id, 0) < cost:
             bot.send_message(chat_id, f"❌ Недостаточно кредитов. Нужно {cost}, у вас {user_credits.get(chat_id, 0)}. Пополните баланс в магазине 💰.")
@@ -361,7 +362,7 @@ def generate_video_async(chat_id, prompt, first_frame_b64=None, last_frame_b64=N
         resp = requests.post(OPENROUTER_VIDEO_URL, json=payload, headers=headers, timeout=60)
         if resp.status_code not in (200, 202):
             if chat_id != ADMIN_ID:
-                user_credits[chat_id] = user_credits.get(chat_id, 0) + cost
+                user_credits[chat_id] = user_credits.get(chat_id, 0) + cost   # возврат
             bot.send_message(chat_id, f"❌ Ошибка {resp.status_code}. Кредиты возвращены.")
             return False
         data = resp.json()
@@ -794,7 +795,7 @@ def handle_video_last_frame(message):
     user_state[chat_id] = None
     bot.send_message(chat_id, "🎥 Выберите видеомодель:", reply_markup=video_model_keyboard())
 
-# Генерация изображений (с проверкой кредитов для Pro)
+# ================== ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЙ (ИСПРАВЛЕНО) ==================
 @bot.message_handler(func=lambda m: user_state.get(m.chat.id) == "awaiting_generate_prompt")
 def handle_generate_prompt(message):
     chat_id = message.chat.id
@@ -805,53 +806,69 @@ def handle_generate_prompt(message):
     if model == 'gigachat':
         waiting = bot.send_message(chat_id, "🎨 Генерирую через GigaChat...")
         img_data = generate_gigachat_image(prompt)
-    else:
-        if chat_id != ADMIN_ID:
-            if user_credits.get(chat_id, 0) < CREDIT_COSTS['image_pro']:
-                bot.send_message(chat_id, "❌ Недостаточно кредитов. Нужно 2 кредита.")
-                send_main_menu(chat_id)
-                return
-            user_credits[chat_id] -= CREDIT_COSTS['image_pro']
-            bot.send_message(chat_id, f"✅ Списано {CREDIT_COSTS['image_pro']} кредита. Осталось: {user_credits[chat_id]}")
-        waiting = bot.send_message(chat_id, "💎 Генерирую через Nano Banana Pro (платно)...")
-        short_prompt = prompt.split('.')[0].strip()
-        if len(short_prompt) > 300:
-            short_prompt = short_prompt[:300] + "..."
-        headers = {
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://t.me/Jastick_bot",
-            "X-Title": "TelegramBot"
-        }
-        payload = {
-            "model": "google/gemini-3-pro-image-preview",
-            "messages": [{"role": "user", "content": short_prompt}],
-            "modalities": ["image", "text"]
-        }
-        try:
-            resp = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
-            if resp.status_code == 200:
-                data = resp.json()
-                msg = data["choices"][0]["message"]
-                if "images" in msg and msg["images"]:
-                    img_url = msg["images"][0]["image_url"]["url"]
-                elif msg.get("content", "").startswith("data:image/"):
-                    img_url = msg["content"]
-                else:
-                    img_data = None
-                if img_url:
-                    if img_url.startswith("data:image/"):
-                        img_data = base64.b64decode(img_url.split(",", 1)[1])
-                    else:
-                        img_data = requests.get(img_url).content
+        if img_data:
+            try:
+                img = Image.open(io.BytesIO(img_data))
+                img.thumbnail((800, 800), Image.LANCZOS)
+                img = img.convert("RGB")
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG", quality=85)
+                bot.send_photo(chat_id, buf.getvalue(), caption="✅ Готово!")
+            except:
+                bot.send_document(chat_id, img_data, caption="✅ Готово (файл)")
+        else:
+            bot.send_message(chat_id, "❌ Не удалось сгенерировать изображение.")
+        send_main_menu(chat_id)
+        return
+
+    # Nano Banana Pro
+    cost = CREDIT_COSTS['image_pro']
+    if chat_id != ADMIN_ID:
+        if user_credits.get(chat_id, 0) < cost:
+            bot.send_message(chat_id, f"❌ Недостаточно кредитов. Нужно {cost} кредита.")
+            send_main_menu(chat_id)
+            return
+        # Списываем только после успеха
+    waiting = bot.send_message(chat_id, "💎 Генерирую через Nano Banana Pro (платно)...")
+    short_prompt = prompt.split('.')[0].strip()
+    if len(short_prompt) > 300:
+        short_prompt = short_prompt[:300] + "..."
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://t.me/Jastick_bot",
+        "X-Title": "TelegramBot"
+    }
+    payload = {
+        "model": "google/gemini-3-pro-image-preview",
+        "messages": [{"role": "user", "content": short_prompt}],
+        "modalities": ["image", "text"]
+    }
+    img_data = None
+    try:
+        resp = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
+        if resp.status_code == 200:
+            data = resp.json()
+            msg = data["choices"][0]["message"]
+            if "images" in msg and msg["images"]:
+                img_url = msg["images"][0]["image_url"]["url"]
+            elif msg.get("content", "").startswith("data:image/"):
+                img_url = msg["content"]
             else:
-                img_data = None
-        except:
-            img_data = None
-        if not img_data and chat_id != ADMIN_ID:
-            user_credits[chat_id] = user_credits.get(chat_id, 0) + CREDIT_COSTS['image_pro']  # возврат
+                img_url = None
+            if img_url:
+                if img_url.startswith("data:image/"):
+                    img_data = base64.b64decode(img_url.split(",", 1)[1])
+                else:
+                    img_data = requests.get(img_url).content
+    except:
+        pass
 
     if img_data:
+        # Успешно – списываем кредиты (если не админ)
+        if chat_id != ADMIN_ID:
+            user_credits[chat_id] -= cost
+            bot.send_message(chat_id, f"✅ Списано {cost} кредита. Осталось: {user_credits[chat_id]}")
         try:
             img = Image.open(io.BytesIO(img_data))
             img.thumbnail((800, 800), Image.LANCZOS)
@@ -862,10 +879,10 @@ def handle_generate_prompt(message):
         except:
             bot.send_document(chat_id, img_data, caption="✅ Готово (файл)")
     else:
-        bot.send_message(chat_id, "❌ Не удалось сгенерировать изображение.")
+        bot.send_message(chat_id, "❌ Не удалось сгенерировать изображение. Кредиты не списаны.")
     send_main_menu(chat_id)
 
-# Редактирование фото (с проверкой кредитов для Pro)
+# ================== РЕДАКТИРОВАНИЕ ФОТО (ИСПРАВЛЕНО) ==================
 @bot.message_handler(content_types=['photo'], func=lambda m: user_state.get(m.chat.id) == "awaiting_photo")
 def handle_awaiting_photo(message):
     chat_id = message.chat.id
@@ -892,24 +909,26 @@ def handle_awaiting_prompt(message):
     if face_mode == 'keep_face':
         prompt = "Keep the face and facial features completely unchanged. Do not modify the face. Only apply the following changes: " + prompt
 
+    cost = CREDIT_COSTS['edit_pro'] if model == 'pro' else 0
     if model == 'pro' and chat_id != ADMIN_ID:
-        if user_credits.get(chat_id, 0) < CREDIT_COSTS['edit_pro']:
-            bot.send_message(chat_id, "❌ Недостаточно кредитов. Нужно 3 кредита.")
+        if user_credits.get(chat_id, 0) < cost:
+            bot.send_message(chat_id, f"❌ Недостаточно кредитов. Нужно {cost} кредита.")
             send_main_menu(chat_id)
             return
-        user_credits[chat_id] -= CREDIT_COSTS['edit_pro']
-        bot.send_message(chat_id, f"✅ Списано {CREDIT_COSTS['edit_pro']} кредита. Осталось: {user_credits[chat_id]}")
 
     waiting = bot.send_message(chat_id, "🎨 Редактирую...")
 
     if model == 'pro':
         img_data, text = edit_image_pro(prompt, photo_base64)
-        model_used = "Nano Banana Pro"
         if not img_data:
             img_data, text = edit_image_flash_25(prompt, photo_base64)
             model_used = "Gemini Flash 2.5 (запасной)"
+        else:
+            model_used = "Nano Banana Pro"
+            # Успешное редактирование – списываем кредиты (не админ)
             if chat_id != ADMIN_ID:
-                user_credits[chat_id] = user_credits.get(chat_id, 0) + CREDIT_COSTS['edit_pro']
+                user_credits[chat_id] -= cost
+                bot.send_message(chat_id, f"✅ Списано {cost} кредита. Осталось: {user_credits[chat_id]}")
     else:
         img_data, text = edit_image_flash(prompt, photo_base64)
         model_used = "Gemini Flash 3.1"
@@ -938,7 +957,7 @@ def handle_awaiting_prompt(message):
     elif text:
         bot.send_message(chat_id, f"⚠️ Модель вернула текстовое описание:\n\n{text[:4000]}")
     else:
-        bot.send_message(chat_id, "❌ Не удалось отредактировать изображение.")
+        bot.send_message(chat_id, "❌ Не удалось отредактировать изображение. Кредиты не списаны.")
     send_main_menu(chat_id)
 
 # Финальная генерация видео
