@@ -27,8 +27,8 @@ GIGACHAT_AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_VIDEO_URL = "https://openrouter.ai/api/v1/videos"
 
-ADMIN_ID = 534008787          # ← Твой реальный Telegram ID
-DEMO_VIDEO_URL = "https://your-server.com/static/demo.mp4"   # замени на свою ссылку
+ADMIN_ID = 534008787
+DEMO_VIDEO_URL = "https://your-server.com/static/demo.mp4"
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 bot.request_timeout = 120
@@ -39,9 +39,9 @@ os.makedirs("static", exist_ok=True)
 
 # --- СЛОВАРИ СОСТОЯНИЙ И ДАННЫХ ---
 user_state = {}
-user_edit_model = {}
+user_edit_model = {}      # 'seedream' или 'grok'
 user_face_mode = {}
-user_generate_model = {}
+user_generate_model = {}  # 'gigachat', 'seedream' или 'grok'
 user_pending_photo = {}
 user_video_mode = {}
 user_video_frames = {}
@@ -57,10 +57,10 @@ VIDEO_MODEL_FEATURES = {
     'kwaivgi/kling-v3-pro': {'audio': True, 'resolution': True},
 }
 
-# Пакеты кредитов (цены в ЗВЕЗДАХ, с маржой ~125%)
+# Пакеты кредитов
 PACKAGES = {
     'start': {'name': 'Старт', 'credits': 50, 'price': 250,
-              'desc': '50 кредитов на любые операции (изображения, фото, видео)'},
+              'desc': '50 кредитов на любые операции'},
     'optima': {'name': 'Оптима', 'credits': 150, 'price': 625,
                'desc': '150 кредитов (выгоднее)'},
     'maxi': {'name': 'Макси', 'credits': 400, 'price': 1500,
@@ -69,9 +69,9 @@ PACKAGES = {
 
 # Стоимость операций в кредитах
 CREDIT_COSTS = {
-    'image_pro': 2,          # генерация Nano Banana Pro
-    'edit_pro': 3,           # редактирование Pro
-    'video': {               # видео по длительности
+    'image_pro': 2,          # генерация Seedream / Grok
+    'edit_pro': 3,           # редактирование Seedream / Grok
+    'video': {
         5: 25,
         10: 50,
         15: 100
@@ -147,18 +147,64 @@ def ask_openrouter_text(prompt):
         return "⚠️ Ошибка соединения"
     return "❌ Ошибка API"
 
-# ================== 3. РЕДАКТИРОВАНИЕ ==================
-def edit_image_pro(prompt, image_base64):
-    short = prompt.split('.')[0].strip()[:300]
-    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
+# ================== 3. ГЕНЕРАЦИЯ / РЕДАКТИРОВАНИЕ (Seedream + Grok) ==================
+def generate_image_pro(prompt, model_id):
+    """
+    Генерация изображения через Seedream 4.5 или Grok Imagine.
+    model_id: 'bytedance-seed/seedream-4.5' или 'x-ai/grok-imagine-image-quality'
+    """
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://t.me/Jastick_bot",
+        "X-Title": "TelegramBot"
+    }
     payload = {
-        "model": "google/gemini-3-pro-image-preview",
+        "model": model_id,
+        "messages": [{"role": "user", "content": prompt}],
+        "modalities": ["image", "text"]
+    }
+    try:
+        r = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
+        if r.status_code == 200:
+            data = r.json()
+            msg = data["choices"][0]["message"]
+            if "images" in msg and msg["images"]:
+                img_url = msg["images"][0]["image_url"]["url"]
+            elif msg.get("content", "").startswith("data:image/"):
+                img_url = msg["content"]
+            else:
+                return None
+            if img_url.startswith("data:image/"):
+                return base64.b64decode(img_url.split(",", 1)[1])
+            else:
+                return requests.get(img_url).content
+    except:
+        pass
+    return None
+
+def edit_image_pro(prompt, image_base64, model_id):
+    """
+    Редактирование изображения через Seedream 4.5 или Grok Imagine.
+    model_id: 'bytedance-seed/seedream-4.5' или 'x-ai/grok-imagine-image-quality'
+    """
+    short_prompt = prompt.split('.')[0].strip()[:300]
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://t.me/Jastick_bot",
+        "X-Title": "TelegramBot"
+    }
+    payload = {
+        "model": model_id,
         "messages": [
-            {"role": "system", "content": "Отредактируй изображение и верни только изображение."},
-            {"role": "user", "content": [
-                {"type": "text", "text": short},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
-            ]}
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": short_prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
+                ]
+            }
         ],
         "modalities": ["image", "text"]
     }
@@ -166,77 +212,21 @@ def edit_image_pro(prompt, image_base64):
         r = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
         if r.status_code == 200:
             msg = r.json()["choices"][0]["message"]
-            img_url = msg.get("images", [{}])[0].get("image_url", {}).get("url")
-            if not img_url:
-                content = msg.get("content", "")
-                if content.startswith("data:image/"):
-                    img_url = content
-                else:
-                    return None, msg.get("content")
+            if "images" in msg and msg["images"]:
+                img_url = msg["images"][0]["image_url"]["url"]
+            elif msg.get("content", "").startswith("data:image/"):
+                img_url = msg["content"]
+            else:
+                return None, msg.get("content")
             if img_url.startswith("data:image/"):
                 return base64.b64decode(img_url.split(",", 1)[1]), None
-            return requests.get(img_url).content, None
+            else:
+                return requests.get(img_url).content, None
     except:
-        return None, None
+        pass
     return None, None
 
-def edit_image_flash(prompt, image_base64):
-    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
-    payload = {
-        "model": "google/gemini-3.1-flash-image",
-        "messages": [{"role": "user", "content": [
-            {"type": "text", "text": prompt},
-            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
-        ]}],
-        "modalities": ["image", "text"]
-    }
-    try:
-        r = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
-        if r.status_code == 200:
-            msg = r.json()["choices"][0]["message"]
-            img_url = msg.get("images", [{}])[0].get("image_url", {}).get("url")
-            if not img_url:
-                content = msg.get("content", "")
-                if content.startswith("data:image/"):
-                    img_url = content
-                else:
-                    return None, msg.get("content")
-            if img_url.startswith("data:image/"):
-                return base64.b64decode(img_url.split(",", 1)[1]), None
-            return requests.get(img_url).content, None
-    except:
-        return None, None
-    return None, None
-
-def edit_image_flash_25(prompt, image_base64):
-    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
-    payload = {
-        "model": "google/gemini-2.5-flash-image",
-        "messages": [{"role": "user", "content": [
-            {"type": "text", "text": prompt},
-            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
-        ]}],
-        "modalities": ["image", "text"]
-    }
-    try:
-        r = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
-        if r.status_code == 200:
-            msg = r.json()["choices"][0]["message"]
-            img_url = msg.get("images", [{}])[0].get("image_url", {}).get("url")
-            if not img_url:
-                content = msg.get("content", "")
-                if content.startswith("data:image/"):
-                    img_url = content
-                else:
-                    return None, msg.get("content")
-            if img_url.startswith("data:image/"):
-                return base64.b64decode(img_url.split(",", 1)[1]), None
-            return requests.get(img_url).content, None
-    except:
-        return None, None
-    return None, None
-
-# ================== 4. ВИДЕО ГЕНЕРАЦИЯ ==================
+# ================== 4. ВИДЕО ГЕНЕРАЦИЯ (без изменений) ==================
 def compress_image_if_needed(b64_str, max_size=(640, 640), quality=80):
     try:
         img_data = base64.b64decode(b64_str)
@@ -314,7 +304,6 @@ def generate_video_async(chat_id, prompt, first_frame_b64=None, last_frame_b64=N
     duration = user_video_params.get(chat_id, {}).get('duration', 5)
     cost = CREDIT_COSTS['video'].get(duration, 25)
 
-    # Проверка и списание кредитов для обычных пользователей
     if chat_id != ADMIN_ID:
         if user_credits.get(chat_id, 0) < cost:
             bot.send_message(chat_id, f"❌ Недостаточно кредитов. Нужно {cost}, у вас {user_credits.get(chat_id, 0)}. Пополните баланс в магазине 💰.")
@@ -362,7 +351,7 @@ def generate_video_async(chat_id, prompt, first_frame_b64=None, last_frame_b64=N
         resp = requests.post(OPENROUTER_VIDEO_URL, json=payload, headers=headers, timeout=60)
         if resp.status_code not in (200, 202):
             if chat_id != ADMIN_ID:
-                user_credits[chat_id] = user_credits.get(chat_id, 0) + cost   # возврат
+                user_credits[chat_id] = user_credits.get(chat_id, 0) + cost
             bot.send_message(chat_id, f"❌ Ошибка {resp.status_code}. Кредиты возвращены.")
             return False
         data = resp.json()
@@ -480,7 +469,7 @@ def goto_shop(call):
     bot.delete_message(call.message.chat.id, call.message.message_id)
     shop(call.message)
 
-# ================== 7. МАГАЗИН (исправлен под Telegram Stars) ==================
+# ================== 7. МАГАЗИН ==================
 @bot.message_handler(func=lambda m: m.text == "💰 Магазин")
 def shop(message):
     chat_id = message.chat.id
@@ -528,7 +517,6 @@ def process_payment(message):
         user_credits[chat_id] = user_credits.get(chat_id, 0) + pkg['credits']
         bot.send_message(chat_id, f"✅ Оплата прошла! Начислено {pkg['credits']} кредитов.\nБаланс: {user_credits[chat_id]} кредитов")
 
-# Обязательная команда /paysupport (правила Telegram)
 @bot.message_handler(commands=['paysupport'])
 def pay_support(message):
     bot.send_message(message.chat.id, "Возврат средств осуществляется в течение 24 часов. Для запроса возврата свяжитесь с @Jastick_bot.")
@@ -587,14 +575,15 @@ def start(message):
 def send_main_menu(chat_id, text="Главное меню:"):
     bot.send_message(chat_id, text, reply_markup=main_menu_keyboard())
 
-# Обработчики меню
+# Меню
 @bot.message_handler(func=lambda m: m.text == "🖼 Создать изображение")
 def menu_generate_image(message):
     user_state[message.chat.id] = "select_model_generate"
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("🆓 GigaChat (бесплатно)", callback_data="gen_gigachat"),
-        InlineKeyboardButton("💎 Nano Banana Pro (2 кредита)", callback_data="gen_nanobanana")
+        InlineKeyboardButton("🌱 Seedream 4.5 (2 кр.)", callback_data="gen_seedream"),
+        InlineKeyboardButton("🚀 Grok Imagine (2 кр.)", callback_data="gen_grok")
     )
     bot.send_message(message.chat.id, "Выбери модель для генерации:", reply_markup=markup)
 
@@ -603,8 +592,8 @@ def menu_edit_photo(message):
     user_state[message.chat.id] = "select_model_edit"
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
-        InlineKeyboardButton("💎 Nano Banana Pro (3 кредита)", callback_data="edit_pro"),
-        InlineKeyboardButton("⚡ Gemini Flash 3.1 (бесплатно)", callback_data="edit_flash")
+        InlineKeyboardButton("🌱 Seedream 4.5 (3 кр.)", callback_data="edit_seedream"),
+        InlineKeyboardButton("🚀 Grok Imagine (3 кр.)", callback_data="edit_grok")
     )
     bot.send_message(message.chat.id, "Выбери модель редактирования:", reply_markup=markup)
 
@@ -632,7 +621,7 @@ def back_to_main(message):
     user_video_model.pop(message.chat.id, None)
     send_main_menu(message.chat.id)
 
-# Колбэки выбора видеомодели и параметров
+# Колбэки выбора видеомодели и параметров (без изменений)
 @bot.callback_query_handler(func=lambda call: call.data.startswith('vmodel_'))
 def set_video_model(call):
     chat_id = call.message.chat.id
@@ -713,16 +702,18 @@ def select_video_mode(call):
         bot.send_message(chat_id, "📸 Загрузи ПЕРВЫЙ кадр (начальное изображение):", reply_markup=back_keyboard())
     bot.answer_callback_query(call.id)
 
-# Колбэки для выбора модели генерации изображений и редактирования
+# Колбэки для выбора модели генерации и редактирования
 @bot.callback_query_handler(func=lambda call: call.data.startswith('gen_'))
 def select_generate_model(call):
     chat_id = call.message.chat.id
-    if call.data == 'gen_gigachat':
+    data = call.data
+    if data == 'gen_gigachat':
         user_generate_model[chat_id] = 'gigachat'
-        bot.answer_callback_query(call.id, "Выбрана GigaChat")
-    else:
-        user_generate_model[chat_id] = 'nanobanana'
-        bot.answer_callback_query(call.id, "Выбрана Nano Banana Pro")
+    elif data == 'gen_seedream':
+        user_generate_model[chat_id] = 'seedream'
+    elif data == 'gen_grok':
+        user_generate_model[chat_id] = 'grok'
+    bot.answer_callback_query(call.id, f"Выбрана модель: {data}")
     bot.delete_message(chat_id, call.message.message_id)
     user_state[chat_id] = "awaiting_generate_prompt"
     bot.send_message(chat_id, "Введи описание изображения:", reply_markup=back_keyboard())
@@ -730,12 +721,12 @@ def select_generate_model(call):
 @bot.callback_query_handler(func=lambda call: call.data.startswith('edit_'))
 def select_edit_model(call):
     chat_id = call.message.chat.id
-    if call.data == 'edit_pro':
-        user_edit_model[chat_id] = 'pro'
-        bot.answer_callback_query(call.id, "Выбрана Nano Banana Pro")
-    else:
-        user_edit_model[chat_id] = 'flash'
-        bot.answer_callback_query(call.id, "Выбрана Gemini Flash 3.1")
+    data = call.data
+    if data == 'edit_seedream':
+        user_edit_model[chat_id] = 'seedream'
+    elif data == 'edit_grok':
+        user_edit_model[chat_id] = 'grok'
+    bot.answer_callback_query(call.id, f"Выбрана модель: {data}")
     bot.delete_message(chat_id, call.message.message_id)
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
@@ -749,10 +740,9 @@ def select_face_mode(call):
     chat_id = call.message.chat.id
     if call.data == 'face_keep':
         user_face_mode[chat_id] = 'keep_face'
-        bot.answer_callback_query(call.id, "Лицо будет сохранено")
     else:
         user_face_mode[chat_id] = 'full_edit'
-        bot.answer_callback_query(call.id, "Полное редактирование")
+    bot.answer_callback_query(call.id, "Режим сохранён")
     bot.delete_message(chat_id, call.message.message_id)
     user_state[chat_id] = "awaiting_photo"
     bot.send_message(chat_id, "📸 Загрузи фото, которое нужно отредактировать.", reply_markup=back_keyboard())
@@ -795,7 +785,7 @@ def handle_video_last_frame(message):
     user_state[chat_id] = None
     bot.send_message(chat_id, "🎥 Выберите видеомодель:", reply_markup=video_model_keyboard())
 
-# ================== ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЙ (ИСПРАВЛЕНО) ==================
+# ================== ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЙ (Seedream / Grok) ==================
 @bot.message_handler(func=lambda m: user_state.get(m.chat.id) == "awaiting_generate_prompt")
 def handle_generate_prompt(message):
     chat_id = message.chat.id
@@ -821,51 +811,17 @@ def handle_generate_prompt(message):
         send_main_menu(chat_id)
         return
 
-    # Nano Banana Pro
+    # Seedream или Grok
+    model_id = 'bytedance-seed/seedream-4.5' if model == 'seedream' else 'x-ai/grok-imagine-image-quality'
     cost = CREDIT_COSTS['image_pro']
     if chat_id != ADMIN_ID:
         if user_credits.get(chat_id, 0) < cost:
             bot.send_message(chat_id, f"❌ Недостаточно кредитов. Нужно {cost} кредита.")
             send_main_menu(chat_id)
             return
-        # Списываем только после успеха
-    waiting = bot.send_message(chat_id, "💎 Генерирую через Nano Banana Pro (платно)...")
-    short_prompt = prompt.split('.')[0].strip()
-    if len(short_prompt) > 300:
-        short_prompt = short_prompt[:300] + "..."
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://t.me/Jastick_bot",
-        "X-Title": "TelegramBot"
-    }
-    payload = {
-        "model": "google/gemini-3-pro-image-preview",
-        "messages": [{"role": "user", "content": short_prompt}],
-        "modalities": ["image", "text"]
-    }
-    img_data = None
-    try:
-        resp = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
-        if resp.status_code == 200:
-            data = resp.json()
-            msg = data["choices"][0]["message"]
-            if "images" in msg and msg["images"]:
-                img_url = msg["images"][0]["image_url"]["url"]
-            elif msg.get("content", "").startswith("data:image/"):
-                img_url = msg["content"]
-            else:
-                img_url = None
-            if img_url:
-                if img_url.startswith("data:image/"):
-                    img_data = base64.b64decode(img_url.split(",", 1)[1])
-                else:
-                    img_data = requests.get(img_url).content
-    except:
-        pass
-
+    waiting = bot.send_message(chat_id, f"💎 Генерирую через {model}...")
+    img_data = generate_image_pro(prompt, model_id)
     if img_data:
-        # Успешно – списываем кредиты (если не админ)
         if chat_id != ADMIN_ID:
             user_credits[chat_id] -= cost
             bot.send_message(chat_id, f"✅ Списано {cost} кредита. Осталось: {user_credits[chat_id]}")
@@ -882,7 +838,7 @@ def handle_generate_prompt(message):
         bot.send_message(chat_id, "❌ Не удалось сгенерировать изображение. Кредиты не списаны.")
     send_main_menu(chat_id)
 
-# ================== РЕДАКТИРОВАНИЕ ФОТО (ИСПРАВЛЕНО) ==================
+# ================== РЕДАКТИРОВАНИЕ ФОТО (Seedream / Grok) ==================
 @bot.message_handler(content_types=['photo'], func=lambda m: user_state.get(m.chat.id) == "awaiting_photo")
 def handle_awaiting_photo(message):
     chat_id = message.chat.id
@@ -902,47 +858,29 @@ def handle_awaiting_prompt(message):
         send_main_menu(chat_id)
         return
 
-    model = user_edit_model.pop(chat_id, 'flash')
+    model = user_edit_model.pop(chat_id, 'seedream')
     face_mode = user_face_mode.pop(chat_id, 'full_edit')
     user_state[chat_id] = None
 
     if face_mode == 'keep_face':
         prompt = "Keep the face and facial features completely unchanged. Do not modify the face. Only apply the following changes: " + prompt
 
-    cost = CREDIT_COSTS['edit_pro'] if model == 'pro' else 0
-    if model == 'pro' and chat_id != ADMIN_ID:
+    model_id = 'bytedance-seed/seedream-4.5' if model == 'seedream' else 'x-ai/grok-imagine-image-quality'
+    cost = CREDIT_COSTS['edit_pro']
+    if chat_id != ADMIN_ID:
         if user_credits.get(chat_id, 0) < cost:
             bot.send_message(chat_id, f"❌ Недостаточно кредитов. Нужно {cost} кредита.")
             send_main_menu(chat_id)
             return
 
-    waiting = bot.send_message(chat_id, "🎨 Редактирую...")
-
-    if model == 'pro':
-        img_data, text = edit_image_pro(prompt, photo_base64)
-        if not img_data:
-            img_data, text = edit_image_flash_25(prompt, photo_base64)
-            model_used = "Gemini Flash 2.5 (запасной)"
-        else:
-            model_used = "Nano Banana Pro"
-            # Успешное редактирование – списываем кредиты (не админ)
-            if chat_id != ADMIN_ID:
-                user_credits[chat_id] -= cost
-                bot.send_message(chat_id, f"✅ Списано {cost} кредита. Осталось: {user_credits[chat_id]}")
-    else:
-        img_data, text = edit_image_flash(prompt, photo_base64)
-        model_used = "Gemini Flash 3.1"
-        if not img_data:
-            img_data, text = edit_image_flash_25(prompt, photo_base64)
-            model_used = "Gemini Flash 2.5 (запасной)"
-
-    try:
-        bot.delete_message(chat_id, waiting.message_id)
-    except:
-        pass
+    waiting = bot.send_message(chat_id, f"🎨 Редактирую через {model}...")
+    img_data, text = edit_image_pro(prompt, photo_base64, model_id)
 
     if img_data:
-        caption = f"✅ Отредактировано ({model_used})"
+        if chat_id != ADMIN_ID:
+            user_credits[chat_id] -= cost
+            bot.send_message(chat_id, f"✅ Списано {cost} кредита. Осталось: {user_credits[chat_id]}")
+        caption = f"✅ Отредактировано ({model})"
         if face_mode == 'keep_face':
             caption += " с сохранением лица"
         try:
