@@ -20,7 +20,7 @@ from collections import defaultdict
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# --- ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ---
+# --- ENV ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 GIST_ID = os.getenv("GIST_ID")
@@ -36,16 +36,16 @@ data_lock = Lock()
 
 MAX_INACTIVITY_MINUTES = 60
 
-# --- СЛОВАРИ ---
+# --- DATA ---
 user_credits = defaultdict(int)
 user_credit_history = defaultdict(list)
 user_message_count = defaultdict(int)
 user_last_activity = defaultdict(float)
 
 user_state = {}
-user_edit_model = {}        # 'flux' или 'seedream'
+user_edit_model = {}
 user_face_mode = {}
-user_generate_model = {}    # 'flux' или 'seedream'
+user_generate_model = {}
 user_pending_photo = {}
 user_video_mode = {}
 user_video_frames = {}
@@ -53,75 +53,60 @@ user_video_params = {}
 user_video_model = {}
 user_video_history = defaultdict(list)
 
-# --- МОДЕЛИ ---
+# --- MODELS ---
 FLUX_MODEL = "black-forest-labs/flux.2-pro"
 SEEDREAM_MODEL = "bytedance-seed/seedream-4.5"
 
-# --- СИНХРОНИЗАЦИЯ С GITHUB GIST ---
+# --- GIST SYNC ---
 def load_data():
     global user_credits, user_credit_history, user_message_count, user_last_activity
     data = None
-
     if GIST_ID and GITHUB_TOKEN:
         url = f"https://api.github.com/gists/{GIST_ID}"
         headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
         try:
             r = requests.get(url, headers=headers, timeout=30)
             if r.status_code == 200:
-                gist_data = r.json()
-                content = gist_data['files']['bot_data.json']['content']
-                data = json.loads(content)
-                logging.info("Данные загружены из Gist")
-            else:
-                logging.error(f"Ошибка загрузки из Gist: {r.status_code}")
+                data = json.loads(r.json()["files"]["bot_data.json"]["content"])
+                logging.info("Loaded from Gist")
         except Exception as e:
-            logging.error(f"Исключение при загрузке из Gist: {e}")
-
+            logging.error(f"Gist load error: {e}")
     if data is None:
         try:
-            with open(DATA_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            logging.info("Данные загружены из локального файла")
-        except FileNotFoundError:
-            logging.info("Локальный файл не найден, начинаем с нуля")
+            with open(DATA_FILE, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            logging.info("Loaded from local file")
+        except Exception:
             data = {}
-        except Exception as e:
-            logging.error(f"Ошибка чтения локального файла: {e}")
-            data = {}
-
-    user_credits = defaultdict(int, {int(k): v for k, v in data.get('credits', {}).items()})
-    user_credit_history = defaultdict(list, {int(k): v for k, v in data.get('history', {}).items()})
-    user_message_count = defaultdict(int, {int(k): v for k, v in data.get('messages', {}).items()})
-    user_last_activity = defaultdict(float, {int(k): v for k, v in data.get('last_activity', {}).items()})
+    user_credits = defaultdict(int, {int(k): v for k, v in data.get("credits", {}).items()})
+    user_credit_history = defaultdict(list, {int(k): v for k, v in data.get("history", {}).items()})
+    user_message_count = defaultdict(int, {int(k): v for k, v in data.get("messages", {}).items()})
+    user_last_activity = defaultdict(float, {int(k): v for k, v in data.get("last_activity", {}).items()})
 
 def save_data():
     with data_lock:
         data = {
-            'credits': dict(user_credits),
-            'history': {k: v for k, v in user_credit_history.items()},
-            'messages': dict(user_message_count),
-            'last_activity': {k: v for k, v in user_last_activity.items()}
+            "credits": dict(user_credits),
+            "history": dict(user_credit_history),
+            "messages": dict(user_message_count),
+            "last_activity": dict(user_last_activity),
         }
         try:
-            with open(DATA_FILE, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            with open(DATA_FILE, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, ensure_ascii=False, indent=2)
         except Exception as e:
-            logging.error(f"Ошибка сохранения в локальный файл: {e}")
-
+            logging.error(f"Local save error: {e}")
         if GIST_ID and GITHUB_TOKEN:
-            url = f"https://api.github.com/gists/{GIST_ID}"
-            headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
-            payload = {"files": {"bot_data.json": {"content": json.dumps(data, ensure_ascii=False, indent=2)}}}
             try:
+                url = f"https://api.github.com/gists/{GIST_ID}"
+                headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+                payload = {"files": {"bot_data.json": {"content": json.dumps(data, ensure_ascii=False, indent=2)}}}
                 r = requests.patch(url, json=payload, headers=headers, timeout=30)
                 if r.status_code == 200:
-                    logging.info("Данные сохранены в Gist")
-                else:
-                    logging.error(f"Ошибка сохранения в Gist: {r.status_code} {r.text}")
+                    logging.info("Saved to Gist")
             except Exception as e:
-                logging.error(f"Исключение при сохранении в Gist: {e}")
+                logging.error(f"Gist save error: {e}")
 
-# --- ИНИЦИАЛИЗАЦИЯ ДАННЫХ ---
 load_data()
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
@@ -132,49 +117,38 @@ logging.basicConfig(level=logging.INFO)
 os.makedirs("static", exist_ok=True)
 
 VIDEO_MODEL_FEATURES = {
-    'bytedance/seedance-2.0': {'audio': True, 'resolution': True},
-    'kwaivgi/kling-video-o1': {'audio': True, 'resolution': True},
-    'kwaivgi/kling-v3-pro': {'audio': True, 'resolution': True},
+    "bytedance/seedance-2.0": {"audio": True, "resolution": True},
+    "kwaivgi/kling-video-o1": {"audio": True, "resolution": True},
+    "kwaivgi/kling-v3-pro": {"audio": True, "resolution": True},
 }
 
 PACKAGES = {
-    'start': {'name': 'Старт', 'credits': 50, 'price': 250,
-              'desc': '50 кредитов на любые операции'},
-    'optima': {'name': 'Оптима', 'credits': 150, 'price': 625,
-               'desc': '150 кредитов (выгоднее)'},
-    'maxi': {'name': 'Макси', 'credits': 400, 'price': 1500,
-             'desc': '400 кредитов (максимальная выгода)'},
+    "start": {"name": "Старт", "credits": 50, "price": 250, "desc": "50 кредитов на любые операции"},
+    "optima": {"name": "Оптима", "credits": 150, "price": 625, "desc": "150 кредитов (выгоднее)"},
+    "maxi": {"name": "Макси", "credits": 400, "price": 1500, "desc": "400 кредитов (максимальная выгода)"},
 }
 
 CREDIT_COSTS = {
-    'image_pro': 2,
-    'edit_pro': 3,
-    'video': {5: 25, 10: 50, 15: 100},
-    'deepseek_session': 1,
+    "image_pro": 2,
+    "edit_pro": 3,
+    "video": {5: 25, 10: 50, 15: 100},
+    "deepseek_session": 1,
 }
 
-# ================== 1. DEEPSEEK V4 PRO ==================
+# ================== DEEPSEEK ==================
 def ask_deepseek(prompt):
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "model": "deepseek/deepseek-v4-pro",
-        "messages": [{"role": "user", "content": prompt}]
-    }
+    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
+    payload = {"model": "deepseek/deepseek-v4-pro", "messages": [{"role": "user", "content": prompt}]}
     try:
         r = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=90)
         if r.status_code == 200:
             return r.json()["choices"][0]["message"]["content"]
-        else:
-            logging.error(f"DeepSeek API error {r.status_code}: {r.text[:200]}")
+        logging.error(f"DeepSeek error {r.status_code}: {r.text[:200]}")
     except Exception as e:
-        logging.error(f"DeepSeek connection error: {e}")
-        return "⚠️ Ошибка соединения"
-    return "❌ Ошибка API"
+        logging.error(f"DeepSeek exception: {e}")
+    return "⚠️ Ошибка соединения"
 
-# ================== 2. УНИВЕРСАЛЬНЫЙ ПАРСЕР ИЗОБРАЖЕНИЙ ==================
+# ================== IMAGE HELPERS ==================
 def _safe_resample():
     try:
         return Image.Resampling.LANCZOS
@@ -195,8 +169,7 @@ def _parse_image_response(resp):
             return None, msg.get("content", "Нет изображения в ответе")
         if img_url.startswith("data:image/"):
             return base64.b64decode(img_url.split(",", 1)[1]), None
-        else:
-            return requests.get(img_url, timeout=30).content, None
+        return requests.get(img_url, timeout=30).content, None
     except Exception as e:
         return None, str(e)
 
@@ -205,16 +178,12 @@ def _build_headers():
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
         "HTTP-Referer": "https://t.me/Jastick_bot",
-        "X-Title": "TelegramBot"
+        "X-Title": "TelegramBot",
     }
 
-# ================== 3. FLUX (ГЕНЕРАЦИЯ + РЕДАКТИРОВАНИЕ) ==================
+# ================== FLUX ==================
 def generate_image_flux(prompt):
-    payload = {
-        "model": FLUX_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "modalities": ["image"]
-    }
+    payload = {"model": FLUX_MODEL, "messages": [{"role": "user", "content": prompt}], "modalities": ["image"]}
     try:
         resp = requests.post(OPENROUTER_URL, json=payload, headers=_build_headers(), timeout=120)
         return _parse_image_response(resp)[0]
@@ -230,26 +199,22 @@ def edit_image_flux(prompt, image_base64):
                 "role": "user",
                 "content": [
                     {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
-                ]
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}},
+                ],
             }
         ],
-        "modalities": ["image"]
+        "modalities": ["image"],
     }
     try:
         resp = requests.post(OPENROUTER_URL, json=payload, headers=_build_headers(), timeout=120)
         return _parse_image_response(resp)
     except Exception as e:
-        logging.error(f"Flux edit exception: {e}")
-        return None, str(e)
+        logging.error(f"Flux edit error: {e}")
+    return None, str(e)
 
-# ================== 4. SEEDREAM 4.5 (ГЕНЕРАЦИЯ + РЕДАКТИРОВАНИЕ) ==================
+# ================== SEEDREAM ==================
 def generate_image_seedream(prompt):
-    payload = {
-        "model": SEEDREAM_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "modalities": ["image"]
-    }
+    payload = {"model": SEEDREAM_MODEL, "messages": [{"role": "user", "content": prompt}], "modalities": ["image"]}
     try:
         resp = requests.post(OPENROUTER_URL, json=payload, headers=_build_headers(), timeout=120)
         return _parse_image_response(resp)[0]
@@ -265,20 +230,20 @@ def edit_image_seedream(prompt, image_base64):
                 "role": "user",
                 "content": [
                     {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
-                ]
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}},
+                ],
             }
         ],
-        "modalities": ["image"]
+        "modalities": ["image"],
     }
     try:
         resp = requests.post(OPENROUTER_URL, json=payload, headers=_build_headers(), timeout=120)
         return _parse_image_response(resp)
     except Exception as e:
-        logging.error(f"Seedream edit exception: {e}")
-        return None, str(e)
+        logging.error(f"Seedream edit error: {e}")
+    return None, str(e)
 
-# ================== 5. ВИДЕО ==================
+# ================== VIDEO ==================
 def compress_image_if_needed(b64_str, max_size=(640, 640), quality=80):
     try:
         img_data = base64.b64decode(b64_str)
@@ -292,7 +257,7 @@ def compress_image_if_needed(b64_str, max_size=(640, 640), quality=80):
         return b64_str
 
 def _is_valid_mp4(data):
-    return data and len(data) > 500 and b'ftyp' in data[:100]
+    return data and len(data) > 500 and b"ftyp" in data[:100]
 
 def _send_video_safe(chat_id, data, caption="✅ Ваше видео готово!"):
     try:
@@ -326,14 +291,17 @@ def poll_video_task(polling_url, headers, chat_id, status_message_id, model_disp
             status = data.get("status")
             progress = data.get("progress")
             elapsed = int((time.time() - start_time) / 60)
-            text = f"🎬 Генерация видео ({model_display}): {int(progress)}% (прошло {elapsed} мин)" if progress else f"🎬 Генерация видео ({model_display}): этап {attempt} (прошло {elapsed} мин)"
+            if progress:
+                text = f"🎬 Генерация видео ({model_display}): {int(progress)}% (прошло {elapsed} мин)"
+            else:
+                text = f"🎬 Генерация видео ({model_display}): этап {attempt} (прошло {elapsed} мин)"
             try:
                 bot.edit_message_text(text, chat_id, status_message_id)
             except Exception:
                 pass
             if status == "completed":
                 bot.edit_message_text("✅ Видео готово! Скачиваю...", chat_id, status_message_id)
-                job_id = polling_url.split('/')[-1]
+                job_id = polling_url.split("/")[-1]
                 unsigned_urls = data.get("unsigned_urls", [])
                 if unsigned_urls:
                     vr = requests.get(unsigned_urls[0], timeout=60, allow_redirects=True)
@@ -355,9 +323,8 @@ def poll_video_task(polling_url, headers, chat_id, status_message_id, model_disp
     bot.edit_message_text("❌ Истекло время ожидания (15 мин).", chat_id, status_message_id)
 
 def generate_video_async(chat_id, prompt, first_frame_b64=None, last_frame_b64=None):
-    duration = user_video_params.get(chat_id, {}).get('duration', 5)
-    cost = CREDIT_COSTS['video'].get(duration, 25)
-
+    duration = user_video_params.get(chat_id, {}).get("duration", 5)
+    cost = CREDIT_COSTS["video"].get(duration, 25)
     with data_lock:
         if chat_id != ADMIN_ID:
             if user_credits.get(chat_id, 0) < cost:
@@ -367,34 +334,28 @@ def generate_video_async(chat_id, prompt, first_frame_b64=None, last_frame_b64=N
             user_credit_history[chat_id].append((time.time(), -cost, f"Видео {duration}с"))
             save_data()
             bot.send_message(chat_id, f"✅ Списано {cost} кредит(ов). Осталось: {user_credits[chat_id]}")
-
     params = user_video_params.get(chat_id, {})
-    resolution = params.get('resolution', '480p')
-    audio = params.get('audio', True)
-    aspect = params.get('aspect_ratio', '16:9')
-    model_id = user_video_model.get(chat_id, 'bytedance/seedance-2.0')
+    resolution = params.get("resolution", "480p")
+    audio = params.get("audio", True)
+    aspect = params.get("aspect_ratio", "16:9")
+    model_id = user_video_model.get(chat_id, "bytedance/seedance-2.0")
     model_names = {
-        'bytedance/seedance-2.0': 'Seedance 2.0',
-        'kwaivgi/kling-video-o1': 'Kling O1',
-        'kwaivgi/kling-v3-pro': 'Kling Pro'
+        "bytedance/seedance-2.0": "Seedance 2.0",
+        "kwaivgi/kling-video-o1": "Kling O1",
+        "kwaivgi/kling-v3-pro": "Kling Pro",
     }
     model_display = model_names.get(model_id, model_id)
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
         "HTTP-Referer": "https://t.me/Jastick_bot",
-        "X-Title": "TelegramBot"
+        "X-Title": "TelegramBot",
     }
-    payload = {
-        "model": model_id,
-        "prompt": prompt,
-        "duration": duration,
-        "aspect_ratio": aspect
-    }
+    payload = {"model": model_id, "prompt": prompt, "duration": duration, "aspect_ratio": aspect}
     features = VIDEO_MODEL_FEATURES.get(model_id, {})
-    if features.get('resolution'):
+    if features.get("resolution"):
         payload["resolution"] = resolution
-    if features.get('audio'):
+    if features.get("audio"):
         payload["audio"] = audio
     frame_images = []
     if first_frame_b64:
@@ -445,7 +406,7 @@ def generate_video_async(chat_id, prompt, first_frame_b64=None, last_frame_b64=N
         bot.send_message(chat_id, "❌ Ошибка связи. Кредиты возвращены.")
     return False
 
-# ================== 6. КЛАВИАТУРЫ ==================
+# ================== KEYBOARDS ==================
 def main_menu_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(
@@ -454,7 +415,7 @@ def main_menu_keyboard():
         KeyboardButton("🎥 Создать видео"),
         KeyboardButton("💬 Спросить (чат)"),
         KeyboardButton("👤 Профиль"),
-        KeyboardButton("💰 Магазин")
+        KeyboardButton("💰 Магазин"),
     )
     return markup
 
@@ -466,35 +427,35 @@ def video_model_keyboard():
     markup.add(
         InlineKeyboardButton("🌱 Seedance 2.0", callback_data="vmodel_seedance-2.0"),
         InlineKeyboardButton("🎬 Kling O1", callback_data="vmodel_kling-o1"),
-        InlineKeyboardButton("🎥 Kling Pro", callback_data="vmodel_kling-pro")
+        InlineKeyboardButton("🎥 Kling Pro", callback_data="vmodel_kling-pro"),
     )
     return markup
 
 def video_params_keyboard(chat_id):
     params = user_video_params.get(chat_id, {})
-    duration = params.get('duration', 5)
-    resolution = params.get('resolution', '480p')
-    audio = params.get('audio', True)
-    aspect = params.get('aspect_ratio', '16:9')
+    duration = params.get("duration", 5)
+    resolution = params.get("resolution", "480p")
+    audio = params.get("audio", True)
+    aspect = params.get("aspect_ratio", "16:9")
     markup = InlineKeyboardMarkup(row_width=3)
     markup.add(
-        InlineKeyboardButton(f"{'✅' if duration==5 else '⬜'} 5 сек", callback_data="vid_dur_5"),
-        InlineKeyboardButton(f"{'✅' if duration==10 else '⬜'} 10 сек", callback_data="vid_dur_10"),
-        InlineKeyboardButton(f"{'✅' if duration==15 else '⬜'} 15 сек", callback_data="vid_dur_15")
+        InlineKeyboardButton(f"{'✅' if duration == 5 else '⬜'} 5 сек", callback_data="vid_dur_5"),
+        InlineKeyboardButton(f"{'✅' if duration == 10 else '⬜'} 10 сек", callback_data="vid_dur_10"),
+        InlineKeyboardButton(f"{'✅' if duration == 15 else '⬜'} 15 сек", callback_data="vid_dur_15"),
     )
     markup.add(
-        InlineKeyboardButton(f"{'✅' if resolution=='480p' else '⬜'} 480p", callback_data="vid_res_480p"),
-        InlineKeyboardButton(f"{'✅' if resolution=='720p' else '⬜'} 720p", callback_data="vid_res_720p"),
-        InlineKeyboardButton(f"{'✅' if resolution=='1080p' else '⬜'} 1080p", callback_data="vid_res_1080p")
+        InlineKeyboardButton(f"{'✅' if resolution == '480p' else '⬜'} 480p", callback_data="vid_res_480p"),
+        InlineKeyboardButton(f"{'✅' if resolution == '720p' else '⬜'} 720p", callback_data="vid_res_720p"),
+        InlineKeyboardButton(f"{'✅' if resolution == '1080p' else '⬜'} 1080p", callback_data="vid_res_1080p"),
     )
     markup.add(
-        InlineKeyboardButton(f"{'✅' if aspect=='16:9' else '⬜'} 16:9", callback_data="vid_aspect_16_9"),
-        InlineKeyboardButton(f"{'✅' if aspect=='9:16' else '⬜'} 9:16", callback_data="vid_aspect_9_16"),
-        InlineKeyboardButton(f"{'✅' if aspect=='1:1' else '⬜'} 1:1", callback_data="vid_aspect_1_1")
+        InlineKeyboardButton(f"{'✅' if aspect == '16:9' else '⬜'} 16:9", callback_data="vid_aspect_16_9"),
+        InlineKeyboardButton(f"{'✅' if aspect == '9:16' else '⬜'} 9:16", callback_data="vid_aspect_9_16"),
+        InlineKeyboardButton(f"{'✅' if aspect == '1:1' else '⬜'} 1:1", callback_data="vid_aspect_1_1"),
     )
     markup.add(
         InlineKeyboardButton(f"{'✅' if audio else '⬜'} Со звуком", callback_data="vid_audio_true"),
-        InlineKeyboardButton(f"{'✅' if not audio else '⬜'} Без звука", callback_data="vid_audio_false")
+        InlineKeyboardButton(f"{'✅' if not audio else '⬜'} Без звука", callback_data="vid_audio_false"),
     )
     markup.add(InlineKeyboardButton("✅ Готово, продолжить", callback_data="vid_params_done"))
     return markup
@@ -503,25 +464,19 @@ def start_video_param_selection(chat_id):
     user_video_params[chat_id] = user_video_params.get(chat_id, {})
     bot.send_message(chat_id, "Настройте параметры видео, затем нажмите «Готово»:", reply_markup=video_params_keyboard(chat_id))
 
-# ================== 7. ПРОФИЛЬ С ИСТОРИЕЙ ==================
+# ================== PROFILE ==================
 @bot.message_handler(func=lambda m: m.text == "👤 Профиль")
 def profile(message):
     chat_id = message.chat.id
     user_last_activity[chat_id] = time.time()
     credits = user_credits.get(chat_id, 0)
     history = user_credit_history.get(chat_id, [])
-    text = f"👤 <b>Ваш профиль</b>
-
-💰 Баланс: {credits} кредитов
-
-"
+    text = f"👤 <b>Ваш профиль</b>\n\n💰 Баланс: {credits} кредитов\n\n"
     if history:
-        text += "📋 <b>Последние операции:</b>
-"
+        text += "📋 <b>Последние операции:</b>\n"
         for ts, delta, reason in history[-5:]:
             sign = "+" if delta > 0 else ""
-            text += f"{sign}{delta} кр. – {escape(reason)}
-"
+            text += f"{sign}{delta} кр. – {escape(reason)}\n"
     else:
         text += "📋 <b>Операций пока нет.</b>"
     markup = InlineKeyboardMarkup()
@@ -533,32 +488,27 @@ def goto_shop(call):
     bot.delete_message(call.message.chat.id, call.message.message_id)
     shop(call.message)
 
-# ================== 8. МАГАЗИН ==================
+# ================== SHOP ==================
 @bot.message_handler(func=lambda m: m.text == "💰 Магазин")
 def shop(message):
     chat_id = message.chat.id
     user_last_activity[chat_id] = time.time()
-    text = ("🛒 <b>Магазин кредитов</b>
-1 кредит позволяет:
-"
-            "• Генерация (Flux/Seedream) — 2 кредита
-"
-            "• Редактирование (Flux/Seedream) — 3 кредита
-"
-            "• Видео 5 сек — 25 кр., 10 сек — 50 кр., 15 сек — 100 кр.
-"
-            "• Чат с ИИ — 1 кредит за 50 сообщений
-
-"
-            "Выберите пакет:")
+    text = (
+        "🛒 <b>Магазин кредитов</b>\n"
+        "1 кредит позволяет:\n"
+        "• Генерация (Flux/Seedream) — 2 кредита\n"
+        "• Редактирование (Flux/Seedream) — 3 кредита\n"
+        "• Видео 5 сек — 25 кр., 10 сек — 50 кр., 15 сек — 100 кр.\n"
+        "• Чат с ИИ — 1 кредит за 50 сообщений\n\n"
+        "Выберите пакет:"
+    )
     markup = InlineKeyboardMarkup(row_width=1)
     for key, pkg in PACKAGES.items():
-        text += f"
-<b>{escape(pkg['name'])}</b>: {pkg['credits']} кредитов — {pkg['price']} ⭐️"
+        text += f"\n<b>{escape(pkg['name'])}</b>: {pkg['credits']} кредитов — {pkg['price']} ⭐️"
         markup.add(InlineKeyboardButton(f"Купить {escape(pkg['name'])} — {pkg['price']} ⭐️", callback_data=f"buy_{key}"))
     bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('buy_'))
+@bot.callback_query_handler(func=lambda call: call.data.startswith("buy_"))
 def initiate_payment(call):
     chat_id = call.message.chat.id
     pkg_key = call.data[4:]
@@ -570,12 +520,12 @@ def initiate_payment(call):
         bot.send_invoice(
             chat_id=chat_id,
             title=f"Пакет «{pkg['name']}»",
-            description=pkg['desc'],
+            description=pkg["desc"],
             provider_token="",
             currency="XTR",
-            prices=[LabeledPrice(label="XTR", amount=pkg['price'])],
+            prices=[LabeledPrice(label="XTR", amount=pkg["price"])],
             start_parameter="shop",
-            invoice_payload=f"package_{pkg_key}"
+            invoice_payload=f"package_{pkg_key}",
         )
         bot.answer_callback_query(call.id, "Счёт отправлен. Оплатите через Telegram Stars.")
     except Exception as e:
@@ -586,40 +536,33 @@ def initiate_payment(call):
 def checkout(query):
     bot.answer_pre_checkout_query(query.id, ok=True)
 
-@bot.message_handler(content_types=['successful_payment'])
+@bot.message_handler(content_types=["successful_payment"])
 def process_payment(message):
     chat_id = message.chat.id
-    pkg_key = message.successful_payment.invoice_payload.split('_')[1]
+    pkg_key = message.successful_payment.invoice_payload.split("_")[1]
     pkg = PACKAGES.get(pkg_key)
     if pkg:
         with data_lock:
-            user_credits[chat_id] = user_credits.get(chat_id, 0) + pkg['credits']
-            user_credit_history[chat_id].append((time.time(), pkg['credits'], f"Покупка пакета {pkg['name']}"))
+            user_credits[chat_id] = user_credits.get(chat_id, 0) + pkg["credits"]
+            user_credit_history[chat_id].append((time.time(), pkg["credits"], f"Покупка пакета {pkg['name']}"))
             save_data()
-        bot.send_message(chat_id, f"✅ Оплата прошла! Начислено {pkg['credits']} кредитов.
-Баланс: {user_credits[chat_id]} кредитов")
+        bot.send_message(chat_id, f"✅ Оплата прошла! Начислено {pkg['credits']} кредитов.\nБаланс: {user_credits[chat_id]} кредитов")
 
-@bot.message_handler(commands=['paysupport'])
+@bot.message_handler(commands=["paysupport"])
 def pay_support(message):
     bot.send_message(message.chat.id, "Возврат средств осуществляется в течение 24 часов. Для запроса возврата свяжитесь с @Jastick_bot.")
 
-# ================== 9. АДМИН-ПАНЕЛЬ ==================
-@bot.message_handler(commands=['admin'])
+# ================== ADMIN ==================
+@bot.message_handler(commands=["admin"])
 def admin_panel(message):
     if message.chat.id != ADMIN_ID:
         return
     with data_lock:
         total_credits = sum(user_credits.values())
-    text = f"👑 Админ-панель
-Пользователей: {len(user_credits)}
-Кредитов всего: {total_credits}
-
-Команды:
-/addcredits <id> <amount>
-/removecredits <id> <amount>"
+    text = f"👑 Админ-панель\nПользователей: {len(user_credits)}\nКредитов всего: {total_credits}\n\nКоманды:\n/addcredits <id> <amount>\n/removecredits <id> <amount>"
     bot.send_message(message.chat.id, text)
 
-@bot.message_handler(commands=['addcredits'])
+@bot.message_handler(commands=["addcredits"])
 def add_credits(message):
     if message.chat.id != ADMIN_ID:
         return
@@ -635,10 +578,10 @@ def add_credits(message):
             bot.send_message(uid, f"🎉 Администратор начислил вам {amt} кредитов. Ваш баланс: {user_credits[uid]}")
         except Exception as e:
             logging.warning(f"Не удалось уведомить {uid}: {e}")
-    except:
+    except Exception:
         bot.send_message(message.chat.id, "Формат: /addcredits <user_id> <amount>")
 
-@bot.message_handler(commands=['removecredits'])
+@bot.message_handler(commands=["removecredits"])
 def remove_credits(message):
     if message.chat.id != ADMIN_ID:
         return
@@ -661,8 +604,8 @@ def remove_credits(message):
         logging.error(f"Remove credits error: {e}")
         bot.send_message(message.chat.id, "Формат: /removecredits <user_id> <amount>")
 
-# ================== 10. СТАРТ И МЕНЮ ==================
-@bot.message_handler(commands=['start'])
+# ================== START & MENU ==================
+@bot.message_handler(commands=["start"])
 def start(message):
     chat_id = message.chat.id
     user_last_activity[chat_id] = time.time()
@@ -680,7 +623,7 @@ def menu_generate_image(message):
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("🌊 Flux Pro (2 кр.)", callback_data="gen_flux"),
-        InlineKeyboardButton("🎨 Seedream 4.5 (2 кр.)", callback_data="gen_seedream")
+        InlineKeyboardButton("🎨 Seedream 4.5 (2 кр.)", callback_data="gen_seedream"),
     )
     bot.send_message(message.chat.id, "Выбери модель для генерации:", reply_markup=markup)
 
@@ -692,7 +635,7 @@ def menu_edit_photo(message):
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("🌊 Flux Pro (3 кр.)", callback_data="edit_flux"),
-        InlineKeyboardButton("🎨 Seedream 4.5 (3 кр.)", callback_data="edit_seedream")
+        InlineKeyboardButton("🎨 Seedream 4.5 (3 кр.)", callback_data="edit_seedream"),
     )
     bot.send_message(message.chat.id, "Выбери модель редактирования:", reply_markup=markup)
 
@@ -704,7 +647,7 @@ def menu_video(message):
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("📝 Текст в видео", callback_data="vid_text"),
-        InlineKeyboardButton("🖼 Картинка в видео", callback_data="vid_image")
+        InlineKeyboardButton("🖼 Картинка в видео", callback_data="vid_image"),
     )
     bot.send_message(message.chat.id, "Выберите режим генерации видео:", reply_markup=markup)
 
@@ -740,15 +683,15 @@ def back_to_main(message):
     user_video_mode.pop(chat_id, None)
     send_main_menu(chat_id)
 
-# ================== 11. КОЛБЭКИ ==================
-@bot.callback_query_handler(func=lambda call: call.data.startswith('vmodel_'))
+# ================== CALLBACKS ==================
+@bot.callback_query_handler(func=lambda call: call.data.startswith("vmodel_"))
 def set_video_model(call):
     chat_id = call.message.chat.id
-    model_key = call.data.split('_', 1)[1]
+    model_key = call.data.split("_", 1)[1]
     model_map = {
-        'seedance-2.0': 'bytedance/seedance-2.0',
-        'kling-o1': 'kwaivgi/kling-video-o1',
-        'kling-pro': 'kwaivgi/kling-v3-pro'
+        "seedance-2.0": "bytedance/seedance-2.0",
+        "kling-o1": "kwaivgi/kling-video-o1",
+        "kling-pro": "kwaivgi/kling-v3-pro",
     }
     if model_key in model_map:
         user_video_model[chat_id] = model_map[model_key]
@@ -758,135 +701,132 @@ def set_video_model(call):
     else:
         bot.answer_callback_query(call.id, "Ошибка выбора модели")
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('vid_dur_'))
+@bot.callback_query_handler(func=lambda call: call.data.startswith("vid_dur_"))
 def set_video_duration(call):
     chat_id = call.message.chat.id
-    duration = int(call.data.split('_')[-1])
-    user_video_params[chat_id]['duration'] = duration
+    duration = int(call.data.split("_")[-1])
+    user_video_params[chat_id]["duration"] = duration
     bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=video_params_keyboard(chat_id))
     bot.answer_callback_query(call.id, f"Длительность: {duration} сек")
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('vid_res_'))
+@bot.callback_query_handler(func=lambda call: call.data.startswith("vid_res_"))
 def set_video_resolution(call):
     chat_id = call.message.chat.id
-    resolution = call.data.split('_')[-1]
-    user_video_params[chat_id]['resolution'] = resolution
+    resolution = call.data.split("_")[-1]
+    user_video_params[chat_id]["resolution"] = resolution
     bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=video_params_keyboard(chat_id))
     bot.answer_callback_query(call.id, f"Разрешение: {resolution}")
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('vid_aspect_'))
+@bot.callback_query_handler(func=lambda call: call.data.startswith("vid_aspect_"))
 def set_video_aspect(call):
     chat_id = call.message.chat.id
-    aspect = call.data.split('_', 2)[2].replace('_', ':')
-    user_video_params[chat_id]['aspect_ratio'] = aspect
+    aspect = call.data.split("_", 2)[2].replace("_", ":")
+    user_video_params[chat_id]["aspect_ratio"] = aspect
     bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=video_params_keyboard(chat_id))
     bot.answer_callback_query(call.id, f"Формат: {aspect}")
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('vid_audio_'))
+@bot.callback_query_handler(func=lambda call: call.data.startswith("vid_audio_"))
 def set_video_audio(call):
     chat_id = call.message.chat.id
-    audio = call.data.split('_')[-1] == 'true'
-    user_video_params[chat_id]['audio'] = audio
+    audio = call.data.split("_")[-1] == "true"
+    user_video_params[chat_id]["audio"] = audio
     bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=video_params_keyboard(chat_id))
     bot.answer_callback_query(call.id, f"Звук: {'включён' if audio else 'выключен'}")
 
-@bot.callback_query_handler(func=lambda call: call.data == 'vid_params_done')
+@bot.callback_query_handler(func=lambda call: call.data == "vid_params_done")
 def video_params_done(call):
     chat_id = call.message.chat.id
     bot.delete_message(chat_id, call.message.message_id)
     params = user_video_params.get(chat_id, {})
-    params.setdefault('duration', 5)
-    params.setdefault('resolution', '480p')
-    params.setdefault('audio', True)
-    params.setdefault('aspect_ratio', '16:9')
+    params.setdefault("duration", 5)
+    params.setdefault("resolution", "480p")
+    params.setdefault("audio", True)
+    params.setdefault("aspect_ratio", "16:9")
     user_video_params[chat_id] = params
     user_state[chat_id] = "awaiting_video_prompt"
     bot.send_message(chat_id, "✏️ Теперь введите описание (промпт) для видео:", reply_markup=back_keyboard())
     bot.answer_callback_query(call.id)
 
-@bot.callback_query_handler(func=lambda call: call.data in ('vid_text', 'vid_image'))
+@bot.callback_query_handler(func=lambda call: call.data in ("vid_text", "vid_image"))
 def select_video_mode(call):
     chat_id = call.message.chat.id
     data = call.data
-    if data == 'vid_text':
-        user_video_mode[chat_id] = 'text'
-        user_video_frames[chat_id] = {'first': None, 'last': None}
+    if data == "vid_text":
+        user_video_mode[chat_id] = "text"
+        user_video_frames[chat_id] = {"first": None, "last": None}
         bot.delete_message(chat_id, call.message.message_id)
         bot.send_message(chat_id, "🎥 Выберите видеомодель:", reply_markup=video_model_keyboard())
-    elif data == 'vid_image':
-        user_video_mode[chat_id] = 'image_one'
-        user_video_frames[chat_id] = {'first': None, 'last': None}
+    elif data == "vid_image":
+        user_video_mode[chat_id] = "image_one"
+        user_video_frames[chat_id] = {"first": None, "last": None}
         user_state[chat_id] = "awaiting_video_image_first"
         bot.delete_message(chat_id, call.message.message_id)
         bot.send_message(chat_id, "📸 Загрузи ПЕРВЫЙ кадр (начальное изображение):", reply_markup=back_keyboard())
     bot.answer_callback_query(call.id)
 
-# --- Выбор модели генерации ---
-@bot.callback_query_handler(func=lambda call: call.data.startswith('gen_'))
+@bot.callback_query_handler(func=lambda call: call.data.startswith("gen_"))
 def select_generate_model(call):
     chat_id = call.message.chat.id
     data = call.data
-    if data == 'gen_flux':
-        user_generate_model[chat_id] = 'flux'
-    elif data == 'gen_seedream':
-        user_generate_model[chat_id] = 'seedream'
+    if data == "gen_flux":
+        user_generate_model[chat_id] = "flux"
+    elif data == "gen_seedream":
+        user_generate_model[chat_id] = "seedream"
     bot.answer_callback_query(call.id, f"Выбрана модель: {data}")
     bot.delete_message(chat_id, call.message.message_id)
     user_state[chat_id] = "awaiting_generate_prompt"
     bot.send_message(chat_id, "Введи описание изображения:", reply_markup=back_keyboard())
 
-# --- Выбор модели редактирования ---
-@bot.callback_query_handler(func=lambda call: call.data.startswith('edit_'))
+@bot.callback_query_handler(func=lambda call: call.data.startswith("edit_"))
 def select_edit_model(call):
     chat_id = call.message.chat.id
     data = call.data
-    if data == 'edit_flux':
-        user_edit_model[chat_id] = 'flux'
-    elif data == 'edit_seedream':
-        user_edit_model[chat_id] = 'seedream'
+    if data == "edit_flux":
+        user_edit_model[chat_id] = "flux"
+    elif data == "edit_seedream":
+        user_edit_model[chat_id] = "seedream"
     bot.answer_callback_query(call.id, f"Выбрана модель: {data}")
     bot.delete_message(chat_id, call.message.message_id)
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("🔒 Сохранить лицо", callback_data="face_keep"),
-        InlineKeyboardButton("🎨 Полное редактирование", callback_data="face_full")
+        InlineKeyboardButton("🎨 Полное редактирование", callback_data="face_full"),
     )
     bot.send_message(chat_id, "Как обрабатывать лицо на фото?", reply_markup=markup)
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('face_'))
+@bot.callback_query_handler(func=lambda call: call.data.startswith("face_"))
 def select_face_mode(call):
     chat_id = call.message.chat.id
-    if call.data == 'face_keep':
-        user_face_mode[chat_id] = 'keep_face'
+    if call.data == "face_keep":
+        user_face_mode[chat_id] = "keep_face"
     else:
-        user_face_mode[chat_id] = 'full_edit'
+        user_face_mode[chat_id] = "full_edit"
     bot.answer_callback_query(call.id, "Режим сохранён")
     bot.delete_message(chat_id, call.message.message_id)
     user_state[chat_id] = "awaiting_photo"
     bot.send_message(chat_id, "📸 Загрузи фото, которое нужно отредактировать.", reply_markup=back_keyboard())
 
-# --- Загрузка кадров для видео ---
-@bot.message_handler(content_types=['photo'], func=lambda m: user_state.get(m.chat.id) == "awaiting_video_image_first")
+@bot.message_handler(content_types=["photo"], func=lambda m: user_state.get(m.chat.id) == "awaiting_video_image_first")
 def handle_video_first_frame(message):
     chat_id = message.chat.id
     user_last_activity[chat_id] = time.time()
     file_info = bot.get_file(message.photo[-1].file_id)
     downloaded = bot.download_file(file_info.file_path)
-    b64 = base64.b64encode(downloaded).decode('utf-8')
-    user_video_frames[chat_id]['first'] = b64
+    b64 = base64.b64encode(downloaded).decode("utf-8")
+    user_video_frames[chat_id]["first"] = b64
     user_state[chat_id] = "awaiting_video_last_choice"
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("Да, загрузить второй кадр", callback_data="last_yes"),
-        InlineKeyboardButton("Нет, только первый", callback_data="last_no")
+        InlineKeyboardButton("Нет, только первый", callback_data="last_no"),
     )
     bot.send_message(chat_id, "Хотите задать ПОСЛЕДНИЙ кадр (конечное изображение)?", reply_markup=markup)
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('last_'))
+@bot.callback_query_handler(func=lambda call: call.data.startswith("last_"))
 def choose_last_frame(call):
     chat_id = call.message.chat.id
     bot.delete_message(chat_id, call.message.message_id)
-    if call.data == 'last_yes':
+    if call.data == "last_yes":
         user_state[chat_id] = "awaiting_video_image_last"
         bot.send_message(chat_id, "📸 Загрузи ПОСЛЕДНИЙ кадр:", reply_markup=back_keyboard())
     else:
@@ -894,27 +834,26 @@ def choose_last_frame(call):
         bot.send_message(chat_id, "🎥 Выберите видеомодель:", reply_markup=video_model_keyboard())
     bot.answer_callback_query(call.id)
 
-@bot.message_handler(content_types=['photo'], func=lambda m: user_state.get(m.chat.id) == "awaiting_video_image_last")
+@bot.message_handler(content_types=["photo"], func=lambda m: user_state.get(m.chat.id) == "awaiting_video_image_last")
 def handle_video_last_frame(message):
     chat_id = message.chat.id
     user_last_activity[chat_id] = time.time()
     file_info = bot.get_file(message.photo[-1].file_id)
     downloaded = bot.download_file(file_info.file_path)
-    b64 = base64.b64encode(downloaded).decode('utf-8')
-    user_video_frames[chat_id]['last'] = b64
+    b64 = base64.b64encode(downloaded).decode("utf-8")
+    user_video_frames[chat_id]["last"] = b64
     user_state[chat_id] = None
     bot.send_message(chat_id, "🎥 Выберите видеомодель:", reply_markup=video_model_keyboard())
 
-# ================== 12. ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЙ ==================
+# ================== IMAGE GENERATION ==================
 @bot.message_handler(func=lambda m: user_state.get(m.chat.id) == "awaiting_generate_prompt")
 def handle_generate_prompt(message):
     chat_id = message.chat.id
     user_last_activity[chat_id] = time.time()
     prompt = message.text
-    model = user_generate_model.pop(chat_id, 'flux')
+    model = user_generate_model.pop(chat_id, "flux")
     user_state[chat_id] = None
-
-    cost = CREDIT_COSTS['image_pro']
+    cost = CREDIT_COSTS["image_pro"]
     with data_lock:
         if chat_id != ADMIN_ID:
             if user_credits.get(chat_id, 0) < cost:
@@ -925,13 +864,11 @@ def handle_generate_prompt(message):
             user_credit_history[chat_id].append((time.time(), -cost, f"Генерация {model}"))
             save_data()
             bot.send_message(chat_id, f"✅ Списано {cost} кредита. Осталось: {user_credits[chat_id]}")
-
-    waiting = bot.send_message(chat_id, f"🎨 Генерирую через {model}...")
-    if model == 'flux':
+    bot.send_message(chat_id, f"🎨 Генерирую через {model}...")
+    if model == "flux":
         img_data = generate_image_flux(prompt)
-    else:  # seedream
+    else:
         img_data = generate_image_seedream(prompt)
-
     if img_data:
         try:
             img = Image.open(io.BytesIO(img_data))
@@ -953,15 +890,15 @@ def handle_generate_prompt(message):
         bot.send_message(chat_id, "❌ Не удалось сгенерировать изображение.")
     send_main_menu(chat_id)
 
-# ================== 13. РЕДАКТИРОВАНИЕ ФОТО ==================
-@bot.message_handler(content_types=['photo'], func=lambda m: user_state.get(m.chat.id) == "awaiting_photo")
+# ================== IMAGE EDITING ==================
+@bot.message_handler(content_types=["photo"], func=lambda m: user_state.get(m.chat.id) == "awaiting_photo")
 def handle_awaiting_photo(message):
     chat_id = message.chat.id
     user_last_activity[chat_id] = time.time()
     user_state[chat_id] = "awaiting_prompt"
     file_info = bot.get_file(message.photo[-1].file_id)
     downloaded = bot.download_file(file_info.file_path)
-    user_pending_photo[chat_id] = base64.b64encode(downloaded).decode('utf-8')
+    user_pending_photo[chat_id] = base64.b64encode(downloaded).decode("utf-8")
     bot.send_message(chat_id, "✏️ Теперь напиши, что изменить (промт):", reply_markup=back_keyboard())
 
 @bot.message_handler(func=lambda m: user_state.get(m.chat.id) == "awaiting_prompt")
@@ -974,15 +911,12 @@ def handle_awaiting_prompt(message):
         bot.send_message(chat_id, "⚠️ Сначала загрузи фото.")
         send_main_menu(chat_id)
         return
-
-    model = user_edit_model.pop(chat_id, 'flux')
-    face_mode = user_face_mode.pop(chat_id, 'full_edit')
+    model = user_edit_model.pop(chat_id, "flux")
+    face_mode = user_face_mode.pop(chat_id, "full_edit")
     user_state[chat_id] = None
-
-    if face_mode == 'keep_face':
+    if face_mode == "keep_face":
         prompt = "Keep the face and facial features completely unchanged. Do not modify the face. Only apply the following changes: " + prompt
-
-    cost = CREDIT_COSTS['edit_pro']
+    cost = CREDIT_COSTS["edit_pro"]
     with data_lock:
         if chat_id != ADMIN_ID:
             if user_credits.get(chat_id, 0) < cost:
@@ -993,16 +927,14 @@ def handle_awaiting_prompt(message):
             user_credit_history[chat_id].append((time.time(), -cost, f"Редактирование {model}"))
             save_data()
             bot.send_message(chat_id, f"✅ Списано {cost} кредита. Осталось: {user_credits[chat_id]}")
-
-    waiting = bot.send_message(chat_id, f"🎨 Редактирую через {model}...")
-    if model == 'flux':
+    bot.send_message(chat_id, f"🎨 Редактирую через {model}...")
+    if model == "flux":
         img_data, error_msg = edit_image_flux(prompt, photo_base64)
-    else:  # seedream
+    else:
         img_data, error_msg = edit_image_seedream(prompt, photo_base64)
-
     if img_data:
         caption = f"✅ Отредактировано ({model})"
-        if face_mode == 'keep_face':
+        if face_mode == "keep_face":
             caption += " с сохранением лица"
         try:
             img = Image.open(io.BytesIO(img_data))
@@ -1021,8 +953,7 @@ def handle_awaiting_prompt(message):
                 user_credit_history[chat_id].append((time.time(), cost, f"Возврат за редактирование {model}"))
                 save_data()
                 bot.send_message(chat_id, f"❌ Ошибка редактирования. {cost} кредит возвращён.")
-        bot.send_message(chat_id, f"❌ Не удалось отредактировать изображение.
-{error_msg}")
+        bot.send_message(chat_id, f"❌ Не удалось отредактировать изображение.\n{error_msg}")
     else:
         with data_lock:
             if chat_id != ADMIN_ID:
@@ -1032,74 +963,63 @@ def handle_awaiting_prompt(message):
                 bot.send_message(chat_id, "❌ Не удалось отредактировать изображение. Кредит возвращён.")
     send_main_menu(chat_id)
 
-# Финальная генерация видео
+# ================== VIDEO PROMPT ==================
 @bot.message_handler(func=lambda m: user_state.get(m.chat.id) == "awaiting_video_prompt")
 def handle_video_prompt(message):
     chat_id = message.chat.id
     user_last_activity[chat_id] = time.time()
     prompt = message.text
     user_state[chat_id] = None
-
-    logging.info(f"=== НАЧАЛО ГЕНЕРАЦИИ ВИДЕО для {chat_id} ===")
-    logging.info(f"Промт: {prompt}")
-    first_frame = user_video_frames.get(chat_id, {}).get('first')
-    last_frame = user_video_frames.get(chat_id, {}).get('last')
-
-    # Очищаем кадры, чтобы не использовать их повторно
+    logging.info(f"=== VIDEO START {chat_id} ===")
+    logging.info(f"Prompt: {prompt}")
+    first_frame = user_video_frames.get(chat_id, {}).get("first")
+    last_frame = user_video_frames.get(chat_id, {}).get("last")
     user_video_frames.pop(chat_id, None)
-
     Thread(target=generate_video_async, args=(chat_id, prompt, first_frame, last_frame), daemon=True).start()
 
-# ================== 14. ЧАТ С DEEPSEEK ==================
-@bot.message_handler(func=lambda m: True, content_types=['text'])
+# ================== CHAT ==================
+@bot.message_handler(func=lambda m: True, content_types=["text"])
 def handle_text_chat(message):
-    if message.text.startswith('/'):
+    if message.text.startswith("/"):
         return
     if message.text in [
         "🖼 Создать изображение", "🎨 Редактировать фото", "🎥 Создать видео",
-        "💬 Спросить (чат)", "👤 Профиль", "💰 Магазин", "🔙 Главное меню"
+        "💬 Спросить (чат)", "👤 Профиль", "💰 Магазин", "🔙 Главное меню",
     ]:
         send_main_menu(message.chat.id, "Пожалуйста, используйте кнопки меню.")
         return
-
     chat_id = message.chat.id
     user_last_activity[chat_id] = time.time()
-
     state = user_state.get(chat_id)
-    if state in ["awaiting_prompt", "awaiting_generate_prompt", "awaiting_photo",
-                 "awaiting_video_prompt", "awaiting_video_image_first",
-                 "awaiting_video_image_last", "awaiting_video_last_choice"]:
+    if state in [
+        "awaiting_prompt", "awaiting_generate_prompt", "awaiting_photo",
+        "awaiting_video_prompt", "awaiting_video_image_first",
+        "awaiting_video_image_last", "awaiting_video_last_choice",
+    ]:
         return
-
     if chat_id == ADMIN_ID:
         reply = ask_deepseek(message.text)
         bot.send_message(chat_id, reply, reply_markup=back_keyboard())
         with data_lock:
             save_data()
         return
-
-    # Проверяем баланс ДО увеличения счётчика
     with data_lock:
         current_count = user_message_count.get(chat_id, 0)
         next_count = current_count + 1
         pending_charge = False
-
         if next_count >= 50:
-            if user_credits.get(chat_id, 0) < CREDIT_COSTS['deepseek_session']:
+            if user_credits.get(chat_id, 0) < CREDIT_COSTS["deepseek_session"]:
                 save_data()
                 bot.send_message(chat_id, "❌ Недостаточно кредитов для продолжения чата. Пополните баланс в магазине 💰.")
                 return
             pending_charge = True
-
         user_message_count[chat_id] = next_count
         save_data()
-
     reply = ask_deepseek(message.text)
-
     if pending_charge and reply and not reply.startswith("⚠️") and not reply.startswith("❌"):
         with data_lock:
-            user_credits[chat_id] -= CREDIT_COSTS['deepseek_session']
-            user_credit_history[chat_id].append((time.time(), -CREDIT_COSTS['deepseek_session'], "Пакет из 50 сообщений DeepSeek"))
+            user_credits[chat_id] -= CREDIT_COSTS["deepseek_session"]
+            user_credit_history[chat_id].append((time.time(), -CREDIT_COSTS["deepseek_session"], "Пакет из 50 сообщений DeepSeek"))
             user_message_count[chat_id] = 0
             save_data()
         bot.send_message(chat_id, f"💬 Использовано 50 сообщений. Списано {CREDIT_COSTS['deepseek_session']} кредит. Осталось: {user_credits[chat_id]} кредитов.")
@@ -1108,10 +1028,7 @@ def handle_text_chat(message):
             user_message_count[chat_id] -= 1
             save_data()
         bot.send_message(chat_id, "⚠️ Ошибка получения ответа. Кредит не списан.")
-
     bot.send_message(chat_id, reply, reply_markup=back_keyboard())
-
-    # Гарантированное сохранение после любого сообщения
     with data_lock:
         save_data()
 
@@ -1119,10 +1036,10 @@ def handle_text_chat(message):
 def handle_other(message):
     bot.send_message(message.chat.id, "Пожалуйста, используй кнопки меню.")
 
-# ================== 15. ЗАПУСК ==================
-@app.route('/static/<path:filename>')
+# ================== RUN ==================
+@app.route("/static/<path:filename>")
 def static_files(filename):
-    return send_from_directory('static', filename)
+    return send_from_directory("static", filename)
 
 def run_bot():
     logging.info("✅ Бот запущен")
@@ -1138,10 +1055,10 @@ def run_bot():
             logging.error(f"Polling error: {e}")
             time.sleep(10)
 
-@app.route('/')
+@app.route("/")
 def index():
     return "Bot is running"
 
 if __name__ == "__main__":
     Thread(target=run_bot, daemon=True).start()
-    app.run(host='0.0.0.0', port=8080)
+    app.run(host="0.0.0.0", port=8080)
