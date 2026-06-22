@@ -8,6 +8,7 @@ import base64
 import urllib3
 import json
 import logging
+from html import escape
 from flask import Flask, send_from_directory
 from threading import Thread, Lock
 from telebot.types import (ReplyKeyboardMarkup, KeyboardButton,
@@ -34,48 +35,14 @@ DEMO_VIDEO_URL = "https://your-server.com/static/demo.mp4"
 DATA_FILE = "bot_data.json"
 data_lock = Lock()
 
-# --- ЗАГРУЗКА / СОХРАНЕНИЕ ДАННЫХ ---
-def load_data():
-    global user_credits, user_credit_history, user_message_count
-    try:
-        with open(DATA_FILE, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        user_credits = defaultdict(int, data.get('credits', {}))
-        user_credit_history = defaultdict(list, data.get('history', {}))
-        user_message_count = defaultdict(int, data.get('messages', {}))
-        logging.info(f"Данные загружены: {len(user_credits)} пользователей")
-    except FileNotFoundError:
-        logging.info("Файл данных не найден, начинаем с нуля")
-        user_credits = defaultdict(int)
-        user_credit_history = defaultdict(list)
-        user_message_count = defaultdict(int)
-    except Exception as e:
-        logging.error(f"Ошибка загрузки данных: {e}")
-        user_credits = defaultdict(int)
-        user_credit_history = defaultdict(list)
-        user_message_count = defaultdict(int)
+MAX_INACTIVITY_MINUTES = 60
 
-def save_data():
-    with data_lock:
-        data = {
-            'credits': dict(user_credits),
-            'history': {k: v for k, v in user_credit_history.items()},
-            'messages': dict(user_message_count)
-        }
-        with open(DATA_FILE, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+# --- СЛОВАРИ ---
+user_credits = defaultdict(int)
+user_credit_history = defaultdict(list)
+user_message_count = defaultdict(int)
+user_last_activity = defaultdict(float)
 
-# --- ИНИЦИАЛИЗАЦИЯ ДАННЫХ ---
-load_data()
-
-bot = telebot.TeleBot(TELEGRAM_TOKEN)
-bot.request_timeout = 120
-app = Flask(__name__)
-logging.basicConfig(level=logging.INFO)
-
-os.makedirs("static", exist_ok=True)
-
-# --- ОСТАЛЬНЫЕ СЛОВАРИ ---
 user_state = {}
 user_edit_model = {}
 user_face_mode = {}
@@ -86,6 +53,64 @@ user_video_frames = {}
 user_video_params = {}
 user_video_model = {}
 user_history = defaultdict(list)
+
+# --- ОЧИСТКА НЕАКТИВНЫХ ---
+def cleanup_inactive_users():
+    cutoff = time.time() - MAX_INACTIVITY_MINUTES * 60
+    keys_to_remove = []
+    with data_lock:
+        for uid, last in list(user_last_activity.items()):
+            if last < cutoff:
+                keys_to_remove.append(uid)
+        for uid in keys_to_remove:
+            for d in (user_credits, user_credit_history, user_message_count, user_last_activity):
+                d.pop(uid, None)
+            for d in (user_state, user_edit_model, user_face_mode, user_generate_model,
+                      user_pending_photo, user_video_mode, user_video_frames,
+                      user_video_params, user_video_model, user_history):
+                d.pop(uid, None)
+    if keys_to_remove:
+        logging.info(f"Очищено {len(keys_to_remove)} неактивных пользователей")
+
+# --- ЗАГРУЗКА / СОХРАНЕНИЕ ДАННЫХ ---
+def load_data():
+    global user_credits, user_credit_history, user_message_count, user_last_activity
+    try:
+        with open(DATA_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        with data_lock:
+            user_credits = defaultdict(int, data.get('credits', {}))
+            user_credit_history = defaultdict(list, data.get('history', {}))
+            user_message_count = defaultdict(int, data.get('messages', {}))
+            user_last_activity = defaultdict(float, data.get('last_activity', {}))
+        logging.info(f"Данные загружены: {len(user_credits)} пользователей")
+    except FileNotFoundError:
+        logging.info("Файл данных не найден, начинаем с нуля")
+    except Exception as e:
+        logging.error(f"Ошибка загрузки данных: {e}")
+
+def save_data():
+    with data_lock:
+        data = {
+            'credits': dict(user_credits),
+            'history': {k: v for k, v in user_credit_history.items()},
+            'messages': dict(user_message_count),
+            'last_activity': {k: v for k, v in user_last_activity.items()}
+        }
+        tmp_file = DATA_FILE + ".tmp"
+        with open(tmp_file, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_file, DATA_FILE)
+
+# --- ИНИЦИАЛИЗАЦИЯ ДАННЫХ ---
+load_data()
+
+bot = telebot.TeleBot(TELEGRAM_TOKEN)
+bot.request_timeout = 120
+app = Flask(__name__)
+logging.basicConfig(level=logging.INFO)
+
+os.makedirs("static", exist_ok=True)
 
 VIDEO_MODEL_FEATURES = {
     'bytedance/seedance-2.0': {'audio': True, 'resolution': True},
@@ -125,8 +150,8 @@ def get_gigachat_token():
                           headers=headers, data=data, verify=False, timeout=30)
         if r.status_code == 200:
             return r.json().get("access_token")
-    except:
-        pass
+    except Exception as e:
+        logging.error(f"GigaChat token error: {e}")
     return None
 
 def download_gigachat_file(token, file_id):
@@ -136,8 +161,8 @@ def download_gigachat_file(token, file_id):
         r = requests.get(url, headers=headers, verify=False, timeout=30)
         if r.status_code == 200:
             return r.content
-    except:
-        pass
+    except Exception as e:
+        logging.error(f"GigaChat download error: {e}")
     return None
 
 def generate_gigachat_image(prompt):
@@ -162,8 +187,9 @@ def generate_gigachat_image(prompt):
             match = re.search(r'src="([a-f0-9\-]+)"', content)
             if match:
                 return download_gigachat_file(token, match.group(1))
-    except:
-        pass
+            logging.warning(f"GigaChat: не найден file_id в ответе: {content[:200]}")
+    except Exception as e:
+        logging.error(f"GigaChat generation error: {e}")
     return None
 
 # ================== 2. DEEPSEEK V4 PRO ==================
@@ -180,11 +206,20 @@ def ask_deepseek(prompt):
         r = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=90)
         if r.status_code == 200:
             return r.json()["choices"][0]["message"]["content"]
-    except:
+        else:
+            logging.error(f"DeepSeek API error {r.status_code}: {r.text[:200]}")
+    except Exception as e:
+        logging.error(f"DeepSeek connection error: {e}")
         return "⚠️ Ошибка соединения"
     return "❌ Ошибка API"
 
 # ================== 3. ГЕНЕРАЦИЯ / РЕДАКТИРОВАНИЕ (Images API) ==================
+def _safe_resample():
+    try:
+        return Image.Resampling.LANCZOS
+    except AttributeError:
+        return Image.LANCZOS
+
 def generate_image_pro(prompt, model_id):
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
@@ -205,9 +240,9 @@ def generate_image_pro(prompt, model_id):
                 if "b64_json" in item:
                     return base64.b64decode(item["b64_json"]), None
                 elif "url" in item:
-                    return requests.get(item["url"]).content, None
+                    return requests.get(item["url"], timeout=30).content, None
         else:
-            logging.error(f"Image generation error {r.status_code}: {r.text}")
+            logging.error(f"Image generation error {r.status_code}: {r.text[:200]}")
             return None, f"Ошибка API: {r.status_code} – {r.text[:200]}"
     except Exception as e:
         logging.error(f"Image generation exception: {e}")
@@ -235,9 +270,9 @@ def edit_image_pro(prompt, image_base64, model_id):
                 if "b64_json" in item:
                     return base64.b64decode(item["b64_json"]), None
                 elif "url" in item:
-                    return requests.get(item["url"]).content, None
+                    return requests.get(item["url"], timeout=30).content, None
         else:
-            logging.error(f"Image edit error {r.status_code}: {r.text}")
+            logging.error(f"Image edit error {r.status_code}: {r.text[:200]}")
             return None, f"Ошибка API: {r.status_code} – {r.text[:200]}"
     except Exception as e:
         logging.error(f"Image edit exception: {e}")
@@ -249,11 +284,12 @@ def compress_image_if_needed(b64_str, max_size=(640, 640), quality=80):
     try:
         img_data = base64.b64decode(b64_str)
         img = Image.open(io.BytesIO(img_data))
-        img.thumbnail(max_size, Image.LANCZOS)
+        img.thumbnail(max_size, _safe_resample())
         buf = io.BytesIO()
         img.convert("RGB").save(buf, format="JPEG", quality=quality)
         return base64.b64encode(buf.getvalue()).decode()
-    except:
+    except Exception as e:
+        logging.error(f"Compress error: {e}")
         return b64_str
 
 def _is_valid_mp4(data):
@@ -275,7 +311,8 @@ def _send_video_safe(chat_id, data, caption="✅ Ваше видео готов�
             doc_file.name = "video.mp4"
             bot.send_document(chat_id, doc_file, caption="✅ Видео (как файл)")
             return True
-        except:
+        except Exception as e2:
+            logging.error(f"send_document error: {e2}")
             return False
 
 def poll_video_task(polling_url, headers, chat_id, status_message_id, model_display=""):
@@ -293,7 +330,7 @@ def poll_video_task(polling_url, headers, chat_id, status_message_id, model_disp
             text = f"🎬 Генерация видео ({model_display}): {int(progress)}% (прошло {elapsed} мин)" if progress else f"🎬 Генерация видео ({model_display}): этап {attempt} (прошло {elapsed} мин)"
             try:
                 bot.edit_message_text(text, chat_id, status_message_id)
-            except:
+            except Exception:
                 pass
             if status == "completed":
                 bot.edit_message_text("✅ Видео готово! Скачиваю...", chat_id, status_message_id)
@@ -314,7 +351,7 @@ def poll_video_task(polling_url, headers, chat_id, status_message_id, model_disp
             elif status in ("failed", "cancelled", "expired"):
                 bot.edit_message_text(f"❌ Ошибка: {status}", chat_id, status_message_id)
                 return
-        except:
+        except Exception:
             pass
     bot.edit_message_text("❌ Истекло время ожидания (15 мин).", chat_id, status_message_id)
 
@@ -322,14 +359,15 @@ def generate_video_async(chat_id, prompt, first_frame_b64=None, last_frame_b64=N
     duration = user_video_params.get(chat_id, {}).get('duration', 5)
     cost = CREDIT_COSTS['video'].get(duration, 25)
 
-    if chat_id != ADMIN_ID:
-        if user_credits.get(chat_id, 0) < cost:
-            bot.send_message(chat_id, f"❌ Недостаточно кредитов. Нужно {cost}, у вас {user_credits.get(chat_id, 0)}. Пополните баланс в магазине 💰.")
-            return False
-        user_credits[chat_id] -= cost
-        user_credit_history[chat_id].append((time.time(), -cost, f"Видео {duration}с"))
-        save_data()
-        bot.send_message(chat_id, f"✅ Списано {cost} кредит(ов). Осталось: {user_credits[chat_id]}")
+    with data_lock:
+        if chat_id != ADMIN_ID:
+            if user_credits.get(chat_id, 0) < cost:
+                bot.send_message(chat_id, f"❌ Недостаточно кредитов. Нужно {cost}, у вас {user_credits.get(chat_id, 0)}. Пополните баланс в магазине 💰.")
+                return False
+            user_credits[chat_id] -= cost
+            user_credit_history[chat_id].append((time.time(), -cost, f"Видео {duration}с"))
+            save_data()
+            bot.send_message(chat_id, f"✅ Списано {cost} кредит(ов). Осталось: {user_credits[chat_id]}")
 
     params = user_video_params.get(chat_id, {})
     resolution = params.get('resolution', '480p')
@@ -370,10 +408,11 @@ def generate_video_async(chat_id, prompt, first_frame_b64=None, last_frame_b64=N
     try:
         resp = requests.post(OPENROUTER_VIDEO_URL, json=payload, headers=headers, timeout=60)
         if resp.status_code not in (200, 202):
-            if chat_id != ADMIN_ID:
-                user_credits[chat_id] = user_credits.get(chat_id, 0) + cost
-                user_credit_history[chat_id].append((time.time(), cost, "Возврат за видео"))
-                save_data()
+            with data_lock:
+                if chat_id != ADMIN_ID:
+                    user_credits[chat_id] = user_credits.get(chat_id, 0) + cost
+                    user_credit_history[chat_id].append((time.time(), cost, "Возврат за видео"))
+                    save_data()
             bot.send_message(chat_id, f"❌ Ошибка {resp.status_code}. Кредиты возвращены.")
             return False
         data = resp.json()
@@ -391,17 +430,19 @@ def generate_video_async(chat_id, prompt, first_frame_b64=None, last_frame_b64=N
             if _is_valid_mp4(raw):
                 _send_video_safe(chat_id, raw)
                 return True
-        if chat_id != ADMIN_ID:
-            user_credits[chat_id] += cost
-            user_credit_history[chat_id].append((time.time(), cost, "Возврат за видео"))
-            save_data()
+        with data_lock:
+            if chat_id != ADMIN_ID:
+                user_credits[chat_id] += cost
+                user_credit_history[chat_id].append((time.time(), cost, "Возврат за видео"))
+                save_data()
         bot.send_message(chat_id, "❌ Пустой ответ. Кредиты возвращены.")
     except Exception as e:
         logging.error(f"Video exception: {e}")
-        if chat_id != ADMIN_ID:
-            user_credits[chat_id] += cost
-            user_credit_history[chat_id].append((time.time(), cost, "Возврат за видео (ошибка)"))
-            save_data()
+        with data_lock:
+            if chat_id != ADMIN_ID:
+                user_credits[chat_id] += cost
+                user_credit_history[chat_id].append((time.time(), cost, "Возврат за видео (ошибка)"))
+                save_data()
         bot.send_message(chat_id, "❌ Ошибка связи. Кредиты возвращены.")
     return False
 
@@ -467,19 +508,20 @@ def start_video_param_selection(chat_id):
 @bot.message_handler(func=lambda m: m.text == "👤 Профиль")
 def profile(message):
     chat_id = message.chat.id
+    user_last_activity[chat_id] = time.time()
     credits = user_credits.get(chat_id, 0)
     history = user_credit_history.get(chat_id, [])
-    text = f"👤 *Ваш профиль*\n\n💰 Баланс: {credits} кредитов\n\n"
+    text = f"👤 <b>Ваш профиль</b>\n\n💰 Баланс: {credits} кредитов\n\n"
     if history:
-        text += "📋 *Последние операции:*\n"
+        text += "📋 <b>Последние операции:</b>\n"
         for ts, delta, reason in history[-5:]:
             sign = "+" if delta > 0 else ""
-            text += f"{sign}{delta} кр. – {reason}\n"
+            text += f"{sign}{delta} кр. – {escape(reason)}\n"
     else:
-        text += "📋 *Операций пока нет.*"
+        text += "📋 <b>Операций пока нет.</b>"
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("💳 Пополнить баланс", callback_data="goto_shop"))
-    bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=markup)
+    bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data == "goto_shop")
 def goto_shop(call):
@@ -490,12 +532,18 @@ def goto_shop(call):
 @bot.message_handler(func=lambda m: m.text == "💰 Магазин")
 def shop(message):
     chat_id = message.chat.id
-    text = "🛒 *Магазин кредитов*\n1 кредит позволяет:\n• Генерация Pro — 2 кредита\n• Редактирование Pro — 3 кредита\n• Видео 5 сек — 25 кр., 10 сек — 50 кр., 15 сек — 100 кр.\n• Чат с ИИ — 1 кредит за 50 сообщений\n\nВыберите пакет:"
+    user_last_activity[chat_id] = time.time()
+    text = ("🛒 <b>Магазин кредитов</b>\n1 кредит позволяет:\n"
+            "• Генерация Pro — 2 кредита\n"
+            "• Редактирование Pro — 3 кредита\n"
+            "• Видео 5 сек — 25 кр., 10 сек — 50 кр., 15 сек — 100 кр.\n"
+            "• Чат с ИИ — 1 кредит за 50 сообщений\n\n"
+            "Выберите пакет:")
     markup = InlineKeyboardMarkup(row_width=1)
     for key, pkg in PACKAGES.items():
-        text += f"\n*{pkg['name']}*: {pkg['credits']} кредитов — {pkg['price']} ⭐️"
-        markup.add(InlineKeyboardButton(f"Купить {pkg['name']} — {pkg['price']} ⭐️", callback_data=f"buy_{key}"))
-    bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=markup)
+        text += f"\n<b>{escape(pkg['name'])}</b>: {pkg['credits']} кредитов — {pkg['price']} ⭐️"
+        markup.add(InlineKeyboardButton(f"Купить {escape(pkg['name'])} — {pkg['price']} ⭐️", callback_data=f"buy_{key}"))
+    bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('buy_'))
 def initiate_payment(call):
@@ -531,9 +579,10 @@ def process_payment(message):
     pkg_key = message.successful_payment.invoice_payload.split('_')[1]
     pkg = PACKAGES.get(pkg_key)
     if pkg:
-        user_credits[chat_id] = user_credits.get(chat_id, 0) + pkg['credits']
-        user_credit_history[chat_id].append((time.time(), pkg['credits'], f"Покупка пакета {pkg['name']}"))
-        save_data()
+        with data_lock:
+            user_credits[chat_id] = user_credits.get(chat_id, 0) + pkg['credits']
+            user_credit_history[chat_id].append((time.time(), pkg['credits'], f"Покупка пакета {pkg['name']}"))
+            save_data()
         bot.send_message(chat_id, f"✅ Оплата прошла! Начислено {pkg['credits']} кредитов.\nБаланс: {user_credits[chat_id]} кредитов")
 
 @bot.message_handler(commands=['paysupport'])
@@ -545,7 +594,8 @@ def pay_support(message):
 def admin_panel(message):
     if message.chat.id != ADMIN_ID:
         return
-    total_credits = sum(user_credits.values())
+    with data_lock:
+        total_credits = sum(user_credits.values())
     text = f"👑 Админ-панель\nПользователей: {len(user_credits)}\nКредитов всего: {total_credits}\n\nКоманды:\n/addcredits <id> <amount>\n/removecredits <id> <amount>"
     bot.send_message(message.chat.id, text)
 
@@ -556,12 +606,17 @@ def add_credits(message):
     try:
         _, uid, amt = message.text.split()
         uid, amt = int(uid), int(amt)
-        user_credits[uid] = user_credits.get(uid, 0) + amt
-        user_credit_history[uid].append((time.time(), amt, "Начисление админом"))
-        save_data()
+        with data_lock:
+            user_credits[uid] = user_credits.get(uid, 0) + amt
+            user_credit_history[uid].append((time.time(), amt, "Начисление админом"))
+            save_data()
         bot.send_message(message.chat.id, f"✅ Начислено {amt} кредитов пользователю {uid}")
-        bot.send_message(uid, f"🎉 Администратор начислил вам {amt} кредитов. Баланс: {user_credits[uid]}")
-    except:
+        try:
+            bot.send_message(uid, f"🎉 Администратор начислил вам {amt} кредитов. Баланс: {user_credits[uid]}")
+        except Exception as e:
+            logging.warning(f"Не удалось уведомить {uid}: {e}")
+    except Exception as e:
+        logging.error(f"Add credits error: {e}")
         bot.send_message(message.chat.id, "Формат: /addcredits <user_id> <amount>")
 
 @bot.message_handler(commands=['removecredits'])
@@ -571,28 +626,34 @@ def remove_credits(message):
     try:
         _, uid, amt = message.text.split()
         uid, amt = int(uid), int(amt)
-        if user_credits.get(uid, 0) >= amt:
-            user_credits[uid] -= amt
-            user_credit_history[uid].append((time.time(), -amt, "Списание админом"))
-            save_data()
-            bot.send_message(message.chat.id, f"✅ Списано {amt} кредитов у {uid}")
-            bot.send_message(uid, f"ℹ️ Администратор списал {amt} кредитов. Баланс: {user_credits[uid]}")
-        else:
-            bot.send_message(message.chat.id, "Недостаточно кредитов")
-    except:
+        with data_lock:
+            if user_credits.get(uid, 0) >= amt:
+                user_credits[uid] -= amt
+                user_credit_history[uid].append((time.time(), -amt, "Списание админом"))
+                save_data()
+                bot.send_message(message.chat.id, f"✅ Списано {amt} кредитов у {uid}")
+                try:
+                    bot.send_message(uid, f"ℹ️ Администратор списал {amt} кредитов. Баланс: {user_credits[uid]}")
+                except Exception as e:
+                    logging.warning(f"Не удалось уведомить {uid}: {e}")
+            else:
+                bot.send_message(message.chat.id, "Недостаточно кредитов")
+    except Exception as e:
+        logging.error(f"Remove credits error: {e}")
         bot.send_message(message.chat.id, "Формат: /removecredits <user_id> <amount>")
 
 # ================== 9. СТАРТ И ОСНОВНЫЕ ОБРАБОТЧИКИ ==================
 @bot.message_handler(commands=['start'])
 def start(message):
     chat_id = message.chat.id
+    user_last_activity[chat_id] = time.time()
     user_state[chat_id] = None
     send_main_menu(chat_id, "👋 Привет! Я умею генерировать изображения, редактировать фото и создавать видео. Выбери действие в меню ниже.")
     try:
         vr = requests.get(DEMO_VIDEO_URL, timeout=30)
         if vr.status_code == 200 and _is_valid_mp4(vr.content):
             bot.send_video(chat_id, vr.content, caption="🎬 Пример работы (видео создано ботом)")
-    except:
+    except Exception:
         pass
 
 def send_main_menu(chat_id, text="Главное меню:"):
@@ -601,7 +662,9 @@ def send_main_menu(chat_id, text="Главное меню:"):
 # Меню
 @bot.message_handler(func=lambda m: m.text == "🖼 Создать изображение")
 def menu_generate_image(message):
-    user_state[message.chat.id] = "select_model_generate"
+    chat_id = message.chat.id
+    user_last_activity[chat_id] = time.time()
+    user_state[chat_id] = "select_model_generate"
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("🆓 GigaChat (бесплатно)", callback_data="gen_gigachat"),
@@ -612,7 +675,9 @@ def menu_generate_image(message):
 
 @bot.message_handler(func=lambda m: m.text == "🎨 Редактировать фото")
 def menu_edit_photo(message):
-    user_state[message.chat.id] = "select_model_edit"
+    chat_id = message.chat.id
+    user_last_activity[chat_id] = time.time()
+    user_state[chat_id] = "select_model_edit"
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("🌱 Seedream 4.5 (3 кр.)", callback_data="edit_seedream"),
@@ -622,7 +687,9 @@ def menu_edit_photo(message):
 
 @bot.message_handler(func=lambda m: m.text == "🎥 Создать видео")
 def menu_video(message):
-    user_state[message.chat.id] = "select_video_mode"
+    chat_id = message.chat.id
+    user_last_activity[chat_id] = time.time()
+    user_state[chat_id] = "select_video_mode"
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("📝 Текст в видео", callback_data="vid_text"),
@@ -632,25 +699,35 @@ def menu_video(message):
 
 @bot.message_handler(func=lambda m: m.text == "💬 Спросить (чат)")
 def menu_chat(message):
-    user_state[message.chat.id] = None
+    chat_id = message.chat.id
+    user_last_activity[chat_id] = time.time()
+    user_state[chat_id] = None
     bot.send_message(message.chat.id, "Задай любой вопрос (DeepSeek V4 Pro). Каждые 50 сообщений списывается 1 кредит.", reply_markup=back_keyboard())
 
 @bot.message_handler(func=lambda m: m.text == "👤 Профиль")
 def menu_profile(message):
+    user_last_activity[message.chat.id] = time.time()
     profile(message)
 
 @bot.message_handler(func=lambda m: m.text == "💰 Магазин")
 def menu_shop(message):
+    user_last_activity[message.chat.id] = time.time()
     shop(message)
 
 @bot.message_handler(func=lambda m: m.text == "🔙 Главное меню")
 def back_to_main(message):
-    user_state[message.chat.id] = None
-    user_video_frames.pop(message.chat.id, None)
-    user_video_params.pop(message.chat.id, None)
-    user_video_mode.pop(message.chat.id, None)
-    user_video_model.pop(message.chat.id, None)
-    send_main_menu(message.chat.id)
+    chat_id = message.chat.id
+    user_last_activity[chat_id] = time.time()
+    user_state.pop(chat_id, None)
+    user_edit_model.pop(chat_id, None)
+    user_face_mode.pop(chat_id, None)
+    user_generate_model.pop(chat_id, None)
+    user_pending_photo.pop(chat_id, None)
+    user_video_frames.pop(chat_id, None)
+    user_video_params.pop(chat_id, None)
+    user_video_model.pop(chat_id, None)
+    user_video_mode.pop(chat_id, None)
+    send_main_menu(chat_id)
 
 # Колбэки выбора видеомодели и параметров
 @bot.callback_query_handler(func=lambda call: call.data.startswith('vmodel_'))
@@ -782,6 +859,7 @@ def select_face_mode(call):
 @bot.message_handler(content_types=['photo'], func=lambda m: user_state.get(m.chat.id) == "awaiting_video_image_first")
 def handle_video_first_frame(message):
     chat_id = message.chat.id
+    user_last_activity[chat_id] = time.time()
     file_info = bot.get_file(message.photo[-1].file_id)
     downloaded = bot.download_file(file_info.file_path)
     b64 = base64.b64encode(downloaded).decode('utf-8')
@@ -809,6 +887,7 @@ def choose_last_frame(call):
 @bot.message_handler(content_types=['photo'], func=lambda m: user_state.get(m.chat.id) == "awaiting_video_image_last")
 def handle_video_last_frame(message):
     chat_id = message.chat.id
+    user_last_activity[chat_id] = time.time()
     file_info = bot.get_file(message.photo[-1].file_id)
     downloaded = bot.download_file(file_info.file_path)
     b64 = base64.b64encode(downloaded).decode('utf-8')
@@ -820,6 +899,7 @@ def handle_video_last_frame(message):
 @bot.message_handler(func=lambda m: user_state.get(m.chat.id) == "awaiting_generate_prompt")
 def handle_generate_prompt(message):
     chat_id = message.chat.id
+    user_last_activity[chat_id] = time.time()
     prompt = message.text
     model = user_generate_model.pop(chat_id, 'gigachat')
     user_state[chat_id] = None
@@ -830,12 +910,13 @@ def handle_generate_prompt(message):
         if img_data:
             try:
                 img = Image.open(io.BytesIO(img_data))
-                img.thumbnail((800, 800), Image.LANCZOS)
+                img.thumbnail((800, 800), _safe_resample())
                 img = img.convert("RGB")
                 buf = io.BytesIO()
                 img.save(buf, format="JPEG", quality=85)
                 bot.send_photo(chat_id, buf.getvalue(), caption="✅ Готово!")
-            except:
+            except Exception as e:
+                logging.error(f"GigaChat image send error: {e}")
                 bot.send_document(chat_id, img_data, caption="✅ Готово (файл)")
         else:
             bot.send_message(chat_id, "❌ Не удалось сгенерировать изображение.")
@@ -843,32 +924,39 @@ def handle_generate_prompt(message):
         return
 
     cost = CREDIT_COSTS['image_pro']
-    if chat_id != ADMIN_ID:
-        if user_credits.get(chat_id, 0) < cost:
-            bot.send_message(chat_id, f"❌ Недостаточно кредитов. Нужно {cost} кредита.")
-            send_main_menu(chat_id)
-            return
+    with data_lock:
+        if chat_id != ADMIN_ID:
+            if user_credits.get(chat_id, 0) < cost:
+                bot.send_message(chat_id, f"❌ Недостаточно кредитов. Нужно {cost} кредита.")
+                send_main_menu(chat_id)
+                return
+            user_credits[chat_id] -= cost
+            user_credit_history[chat_id].append((time.time(), -cost, f"Генерация {model}"))
+            save_data()
+            bot.send_message(chat_id, f"✅ Списано {cost} кредита. Осталось: {user_credits[chat_id]}")
 
     model_id = 'bytedance-seed/seedream-4.5' if model == 'seedream' else 'x-ai/grok-imagine-image-quality'
     waiting = bot.send_message(chat_id, f"💎 Генерирую через {model}...")
     img_data, error_msg = generate_image_pro(prompt, model_id)
 
     if img_data:
-        if chat_id != ADMIN_ID:
-            user_credits[chat_id] -= cost
-            user_credit_history[chat_id].append((time.time(), -cost, f"Генерация {model}"))
-            save_data()
-            bot.send_message(chat_id, f"✅ Списано {cost} кредита. Осталось: {user_credits[chat_id]}")
         try:
             img = Image.open(io.BytesIO(img_data))
-            img.thumbnail((800, 800), Image.LANCZOS)
+            img.thumbnail((800, 800), _safe_resample())
             img = img.convert("RGB")
             buf = io.BytesIO()
             img.save(buf, format="JPEG", quality=85)
             bot.send_photo(chat_id, buf.getvalue(), caption="✅ Готово!")
-        except:
+        except Exception as e:
+            logging.error(f"Pro image send error: {e}")
             bot.send_document(chat_id, img_data, caption="✅ Готово (файл)")
     else:
+        with data_lock:
+            if chat_id != ADMIN_ID:
+                user_credits[chat_id] += cost
+                user_credit_history[chat_id].append((time.time(), cost, f"Возврат за генерацию {model}"))
+                save_data()
+                bot.send_message(chat_id, f"❌ Ошибка генерации. {cost} кредит возвращён.")
         bot.send_message(chat_id, f"❌ Не удалось сгенерировать изображение.\n{error_msg}")
     send_main_menu(chat_id)
 
@@ -876,6 +964,7 @@ def handle_generate_prompt(message):
 @bot.message_handler(content_types=['photo'], func=lambda m: user_state.get(m.chat.id) == "awaiting_photo")
 def handle_awaiting_photo(message):
     chat_id = message.chat.id
+    user_last_activity[chat_id] = time.time()
     user_state[chat_id] = "awaiting_prompt"
     file_info = bot.get_file(message.photo[-1].file_id)
     downloaded = bot.download_file(file_info.file_path)
@@ -885,6 +974,7 @@ def handle_awaiting_photo(message):
 @bot.message_handler(func=lambda m: user_state.get(m.chat.id) == "awaiting_prompt")
 def handle_awaiting_prompt(message):
     chat_id = message.chat.id
+    user_last_activity[chat_id] = time.time()
     prompt = message.text
     photo_base64 = user_pending_photo.pop(chat_id, None)
     if not photo_base64:
@@ -900,44 +990,57 @@ def handle_awaiting_prompt(message):
         prompt = "Keep the face and facial features completely unchanged. Do not modify the face. Only apply the following changes: " + prompt
 
     cost = CREDIT_COSTS['edit_pro']
-    if chat_id != ADMIN_ID:
-        if user_credits.get(chat_id, 0) < cost:
-            bot.send_message(chat_id, f"❌ Недостаточно кредитов. Нужно {cost} кредита.")
-            send_main_menu(chat_id)
-            return
+    with data_lock:
+        if chat_id != ADMIN_ID:
+            if user_credits.get(chat_id, 0) < cost:
+                bot.send_message(chat_id, f"❌ Недостаточно кредитов. Нужно {cost} кредита.")
+                send_main_menu(chat_id)
+                return
+            user_credits[chat_id] -= cost
+            user_credit_history[chat_id].append((time.time(), -cost, f"Редактирование {model}"))
+            save_data()
+            bot.send_message(chat_id, f"✅ Списано {cost} кредита. Осталось: {user_credits[chat_id]}")
 
     model_id = 'bytedance-seed/seedream-4.5' if model == 'seedream' else 'x-ai/grok-imagine-image-quality'
     waiting = bot.send_message(chat_id, f"🎨 Редактирую через {model}...")
     img_data, error_msg = edit_image_pro(prompt, photo_base64, model_id)
 
     if img_data:
-        if chat_id != ADMIN_ID:
-            user_credits[chat_id] -= cost
-            user_credit_history[chat_id].append((time.time(), -cost, f"Редактирование {model}"))
-            save_data()
-            bot.send_message(chat_id, f"✅ Списано {cost} кредита. Осталось: {user_credits[chat_id]}")
         caption = f"✅ Отредактировано ({model})"
         if face_mode == 'keep_face':
             caption += " с сохранением лица"
         try:
             img = Image.open(io.BytesIO(img_data))
-            img.thumbnail((800, 800), Image.LANCZOS)
+            img.thumbnail((800, 800), _safe_resample())
             img = img.convert("RGB")
             buf = io.BytesIO()
             img.save(buf, format="JPEG", quality=85)
             bot.send_photo(chat_id, buf.getvalue(), caption=caption)
-        except:
+        except Exception as e:
+            logging.error(f"Edit image send error: {e}")
             bot.send_document(chat_id, img_data, caption=caption)
     elif error_msg:
+        with data_lock:
+            if chat_id != ADMIN_ID:
+                user_credits[chat_id] += cost
+                user_credit_history[chat_id].append((time.time(), cost, f"Возврат за редактирование {model}"))
+                save_data()
+                bot.send_message(chat_id, f"❌ Ошибка редактирования. {cost} кредит возвращён.")
         bot.send_message(chat_id, f"❌ Не удалось отредактировать изображение.\n{error_msg}")
     else:
-        bot.send_message(chat_id, "❌ Не удалось отредактировать изображение. Кредиты не списаны.")
+        with data_lock:
+            if chat_id != ADMIN_ID:
+                user_credits[chat_id] += cost
+                user_credit_history[chat_id].append((time.time(), cost, "Возврат за редактирование (пустой ответ)"))
+                save_data()
+                bot.send_message(chat_id, "❌ Не удалось отредактировать изображение. Кредит возвращён.")
     send_main_menu(chat_id)
 
 # Финальная генерация видео
 @bot.message_handler(func=lambda m: user_state.get(m.chat.id) == "awaiting_video_prompt")
 def handle_video_prompt(message):
     chat_id = message.chat.id
+    user_last_activity[chat_id] = time.time()
     prompt = message.text
     user_state[chat_id] = None
 
@@ -960,28 +1063,53 @@ def handle_text_chat(message):
         send_main_menu(message.chat.id, "Пожалуйста, используйте кнопки меню.")
         return
 
-    state = user_state.get(message.chat.id)
-    if state in ["awaiting_prompt", "awaiting_generate_prompt", "awaiting_photo", "awaiting_video_prompt", "awaiting_video_image_first", "awaiting_video_image_last", "select_video_model"]:
+    chat_id = message.chat.id
+    user_last_activity[chat_id] = time.time()
+
+    state = user_state.get(chat_id)
+    if state in ["awaiting_prompt", "awaiting_generate_prompt", "awaiting_photo",
+                 "awaiting_video_prompt", "awaiting_video_image_first",
+                 "awaiting_video_image_last", "awaiting_video_last_choice"]:
         return
 
-    chat_id = message.chat.id
     if chat_id == ADMIN_ID:
         reply = ask_deepseek(message.text)
         bot.send_message(chat_id, reply, reply_markup=back_keyboard())
         return
 
-    user_message_count[chat_id] += 1
-    if user_message_count[chat_id] % 50 == 0:
-        cost = CREDIT_COSTS['deepseek_session']
-        if user_credits.get(chat_id, 0) < cost:
-            bot.send_message(chat_id, "❌ Недостаточно кредитов для продолжения чата. Пополните баланс в магазине 💰.")
-            return
-        user_credits[chat_id] -= cost
-        user_credit_history[chat_id].append((time.time(), -cost, "Пакет из 50 сообщений DeepSeek"))
-        save_data()
-        bot.send_message(chat_id, f"💬 Использовано 50 сообщений. Списано {cost} кредит. Осталось: {user_credits[chat_id]} кредитов.")
+    # Проверяем, не пора ли списать кредит (каждые 50 сообщений)
+    with data_lock:
+        user_message_count[chat_id] += 1
+        count = user_message_count[chat_id]
+
+        if count >= 50:
+            if user_credits.get(chat_id, 0) < CREDIT_COSTS['deepseek_session']:
+                user_message_count[chat_id] -= 1  # откатываем, чтобы не потерять сообщение
+                save_data()
+                bot.send_message(chat_id, "❌ Недостаточно кредитов для продолжения чата. Пополните баланс в магазине 💰.")
+                return
+            # Баланс есть, продолжаем. Списание будет после успешного ответа.
+            pending_charge = True
+        else:
+            pending_charge = False
 
     reply = ask_deepseek(message.text)
+
+    # Если ответ получен успешно и нужно списать кредит
+    if pending_charge and reply and not reply.startswith("⚠️") and not reply.startswith("❌"):
+        with data_lock:
+            user_credits[chat_id] -= CREDIT_COSTS['deepseek_session']
+            user_credit_history[chat_id].append((time.time(), -CREDIT_COSTS['deepseek_session'], "Пакет из 50 сообщений DeepSeek"))
+            user_message_count[chat_id] = 0
+            save_data()
+        bot.send_message(chat_id, f"💬 Использовано 50 сообщений. Списано {CREDIT_COSTS['deepseek_session']} кредит. Осталось: {user_credits[chat_id]} кредитов.")
+    elif pending_charge:
+        # Ошибка API — откатываем счетчик
+        with data_lock:
+            user_message_count[chat_id] -= 1
+            save_data()
+        bot.send_message(chat_id, "⚠️ Ошибка получения ответа. Кредит не списан.")
+
     bot.send_message(chat_id, reply, reply_markup=back_keyboard())
 
 @bot.message_handler(func=lambda m: True)
@@ -998,7 +1126,7 @@ def run_bot():
     try:
         bot.remove_webhook()
         time.sleep(1)
-    except:
+    except Exception:
         pass
     while True:
         try:
@@ -1012,5 +1140,6 @@ def index():
     return "Bot is running"
 
 if __name__ == "__main__":
-    Thread(target=run_bot).start()
+    cleanup_inactive_users()
+    Thread(target=run_bot, daemon=True).start()
     app.run(host='0.0.0.0', port=8080)
