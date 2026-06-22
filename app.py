@@ -28,7 +28,6 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_VIDEO_URL = "https://openrouter.ai/api/v1/videos"
-OPENROUTER_IMAGE_URL = "https://openrouter.ai/api/v1/images/generations"
 
 ADMIN_ID = 534008787
 
@@ -44,9 +43,9 @@ user_message_count = defaultdict(int)
 user_last_activity = defaultdict(float)
 
 user_state = {}
-user_edit_model = {}        # 'nano', 'flash', 'seedream', 'grok'
+user_edit_model = {}        # 'nano' или 'flash'
 user_face_mode = {}
-user_generate_model = {}    # 'nano', 'flash', 'seedream', 'grok'
+user_generate_model = {}    # 'nano' или 'flash'
 user_pending_photo = {}
 user_video_mode = {}
 user_video_frames = {}
@@ -57,36 +56,42 @@ user_video_history = defaultdict(list)
 # --- СИНХРОНИЗАЦИЯ С GITHUB GIST ---
 def load_data():
     global user_credits, user_credit_history, user_message_count, user_last_activity
-    if not GIST_ID or not GITHUB_TOKEN:
-        logging.warning("GIST_ID или GITHUB_TOKEN не заданы. Использую локальный файл.")
+    data = None
+
+    # Сначала пробуем Gist
+    if GIST_ID and GITHUB_TOKEN:
+        url = f"https://api.github.com/gists/{GIST_ID}"
+        headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+        try:
+            r = requests.get(url, headers=headers, timeout=30)
+            if r.status_code == 200:
+                gist_data = r.json()
+                content = gist_data['files']['bot_data.json']['content']
+                data = json.loads(content)
+                logging.info("Данные загружены из Gist")
+            else:
+                logging.error(f"Ошибка загрузки из Gist: {r.status_code}")
+        except Exception as e:
+            logging.error(f"Исключение при загрузке из Gist: {e}")
+
+    # Fallback на локальный файл
+    if data is None:
         try:
             with open(DATA_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-            user_credits = defaultdict(int, data.get('credits', {}))
-            user_credit_history = defaultdict(list, data.get('history', {}))
-            user_message_count = defaultdict(int, data.get('messages', {}))
-            user_last_activity = defaultdict(float, data.get('last_activity', {}))
+            logging.info("Данные загружены из локального файла")
         except FileNotFoundError:
-            logging.info("Локальный файл не найден, начинаем с нуля")
-        return
+            logging.info("Файл данных не найден, начинаем с нуля")
+            data = {}
+        except Exception as e:
+            logging.error(f"Ошибка чтения локального файла: {e}")
+            data = {}
 
-    url = f"https://api.github.com/gists/{GIST_ID}"
-    headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
-    try:
-        r = requests.get(url, headers=headers, timeout=30)
-        if r.status_code == 200:
-            gist_data = r.json()
-            content = gist_data['files']['bot_data.json']['content']
-            data = json.loads(content)
-            user_credits = defaultdict(int, data.get('credits', {}))
-            user_credit_history = defaultdict(list, data.get('history', {}))
-            user_message_count = defaultdict(int, data.get('messages', {}))
-            user_last_activity = defaultdict(float, data.get('last_activity', {}))
-            logging.info("Данные загружены из Gist")
-        else:
-            logging.error(f"Ошибка загрузки из Gist: {r.status_code}")
-    except Exception as e:
-        logging.error(f"Исключение при загрузке из Gist: {e}")
+    # КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: преобразуем ключи из str в int
+    user_credits = defaultdict(int, {int(k): v for k, v in data.get('credits', {}).items()})
+    user_credit_history = defaultdict(list, {int(k): v for k, v in data.get('history', {}).items()})
+    user_message_count = defaultdict(int, {int(k): v for k, v in data.get('messages', {}).items()})
+    user_last_activity = defaultdict(float, {int(k): v for k, v in data.get('last_activity', {}).items()})
 
 def save_data():
     with data_lock:
@@ -96,9 +101,13 @@ def save_data():
             'messages': dict(user_message_count),
             'last_activity': {k: v for k, v in user_last_activity.items()}
         }
+
         # Локальный файл (резерв)
-        with open(DATA_FILE, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        try:
+            with open(DATA_FILE, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logging.error(f"Ошибка сохранения в локальный файл: {e}")
 
         # GitHub Gist
         if GIST_ID and GITHUB_TOKEN:
@@ -167,73 +176,164 @@ def ask_deepseek(prompt):
         return "⚠️ Ошибка соединения"
     return "❌ Ошибка API"
 
-# ================== 2. ГЕНЕРАЦИЯ / РЕДАКТИРОВАНИЕ ==================
+# ================== 2. ГЕНЕРАЦИЯ / РЕДАКТИРОВАНИЕ (Chat API) ==================
 def _safe_resample():
     try:
         return Image.Resampling.LANCZOS
     except AttributeError:
         return Image.LANCZOS
 
-def generate_image_pro(prompt, model_id):
-    """Генерация через Images API (Seedream / Grok)"""
+# --- NANO: google/gemini-3.1-flash-image (исправлено) ---
+def edit_image_nano(prompt, image_base64):
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://t.me/Jastick_bot",
+        "X-Title": "TelegramBot"
     }
     payload = {
-        "model": model_id,
-        "prompt": prompt,
-        "n": 1,
-        "size": "1024x1024"
+        "model": "google/gemini-3.1-flash-image",
+        "messages": [
+            {
+                "role": "system",
+                "content": "Ты — редактор изображений. Отредактируй прикреплённое изображение по описанию пользователя и верни только готовое изображение. Не добавляй текст."
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
+                ]
+            }
+        ],
+        "modalities": ["image", "text"]
     }
     try:
-        r = requests.post(OPENROUTER_IMAGE_URL, json=payload, headers=headers, timeout=120)
-        if r.status_code == 200:
-            data = r.json()
-            if "data" in data and len(data["data"]) > 0:
-                item = data["data"][0]
-                if "b64_json" in item:
-                    return base64.b64decode(item["b64_json"]), None
-                elif "url" in item:
-                    return requests.get(item["url"], timeout=30).content, None
+        resp = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
+        if resp.status_code == 200:
+            data = resp.json()
+            msg = data["choices"][0]["message"]
+            if "images" in msg and msg["images"]:
+                img_url = msg["images"][0]["image_url"]["url"]
+            elif msg.get("content", "").startswith("data:image/"):
+                img_url = msg["content"]
+            else:
+                return None, msg.get("content")
+            if img_url.startswith("data:image/"):
+                return base64.b64decode(img_url.split(",", 1)[1]), None
+            else:
+                return requests.get(img_url, timeout=30).content, None
         else:
-            logging.error(f"Image generation error {r.status_code}: {r.text[:200]}")
-            return None, f"Ошибка API: {r.status_code}"
+            logging.error(f"Gemini Pro edit error: {resp.status_code} {resp.text[:200]}")
+            return None, f"Ошибка API: {resp.status_code}"
     except Exception as e:
-        logging.error(f"Image generation exception: {e}")
+        logging.error(f"Gemini Pro edit exception: {e}")
         return None, str(e)
-    return None, "Пустой ответ"
 
-def edit_image_pro(prompt, image_base64, model_id):
-    """Редактирование через Images API (Seedream / Grok)"""
+# --- FLASH: если тоже 404 — замени slug на актуальный из OpenRouter ---
+def edit_image_flash(prompt, image_base64):
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://t.me/Jastick_bot",
+        "X-Title": "TelegramBot"
     }
     payload = {
-        "model": model_id,
-        "prompt": prompt,
-        "image": f"data:image/jpeg;base64,{image_base64}",
-        "n": 1,
-        "size": "1024x1024"
+        "model": "google/gemini-2.5-flash-image",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
+                ]
+            }
+        ],
+        "modalities": ["image", "text"]
     }
     try:
-        r = requests.post(OPENROUTER_IMAGE_URL, json=payload, headers=headers, timeout=120)
+        resp = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
+        if resp.status_code == 200:
+            data = resp.json()
+            msg = data["choices"][0]["message"]
+            if "images" in msg and msg["images"]:
+                img_url = msg["images"][0]["image_url"]["url"]
+            elif msg.get("content", "").startswith("data:image/"):
+                img_url = msg["content"]
+            else:
+                return None, msg.get("content")
+            if img_url.startswith("data:image/"):
+                return base64.b64decode(img_url.split(",", 1)[1]), None
+            else:
+                return requests.get(img_url, timeout=30).content, None
+        else:
+            logging.error(f"Gemini Flash edit error: {resp.status_code} {resp.text[:200]}")
+            return None, f"Ошибка API: {resp.status_code}"
+    except Exception as e:
+        logging.error(f"Gemini Flash edit exception: {e}")
+        return None, str(e)
+
+def generate_image_nano(prompt):
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://t.me/Jastick_bot",
+        "X-Title": "TelegramBot"
+    }
+    payload = {
+        "model": "google/gemini-3.1-flash-image",
+        "messages": [{"role": "user", "content": prompt}],
+        "modalities": ["image", "text"]
+    }
+    try:
+        r = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
         if r.status_code == 200:
             data = r.json()
-            if "data" in data and len(data["data"]) > 0:
-                item = data["data"][0]
-                if "b64_json" in item:
-                    return base64.b64decode(item["b64_json"]), None
-                elif "url" in item:
-                    return requests.get(item["url"], timeout=30).content, None
-        else:
-            logging.error(f"Image edit error {r.status_code}: {r.text[:200]}")
-            return None, f"Ошибка API: {r.status_code}"
+            msg = data["choices"][0]["message"]
+            if "images" in msg and msg["images"]:
+                img_url = msg["images"][0]["image_url"]["url"]
+            elif msg.get("content", "").startswith("data:image/"):
+                img_url = msg["content"]
+            else:
+                return None
+            if img_url.startswith("data:image/"):
+                return base64.b64decode(img_url.split(",", 1)[1])
+            else:
+                return requests.get(img_url, timeout=30).content
     except Exception as e:
-        logging.error(f"Image edit exception: {e}")
-        return None, str(e)
-    return None, "Пустой ответ"
+        logging.error(f"Gemini Pro generation error: {e}")
+    return None
+
+def generate_image_flash(prompt):
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://t.me/Jastick_bot",
+        "X-Title": "TelegramBot"
+    }
+    payload = {
+        "model": "google/gemini-2.5-flash-image",
+        "messages": [{"role": "user", "content": prompt}],
+        "modalities": ["image", "text"]
+    }
+    try:
+        r = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
+        if r.status_code == 200:
+            data = r.json()
+            msg = data["choices"][0]["message"]
+            if "images" in msg and msg["images"]:
+                img_url = msg["images"][0]["image_url"]["url"]
+            elif msg.get("content", "").startswith("data:image/"):
+                img_url = msg["content"]
+            else:
+                return None
+            if img_url.startswith("data:image/"):
+                return base64.b64decode(img_url.split(",", 1)[1])
+            else:
+                return requests.get(img_url, timeout=30).content
+    except Exception as e:
+        logging.error(f"Gemini Flash generation error: {e}")
+    return None
 
 # ================== 3. ВИДЕО ==================
 def compress_image_if_needed(b64_str, max_size=(640, 640), quality=80):
@@ -460,7 +560,7 @@ def start_video_param_selection(chat_id):
     user_video_params[chat_id] = user_video_params.get(chat_id, {})
     bot.send_message(chat_id, "Настройте параметры видео, затем нажмите «Готово»:", reply_markup=video_params_keyboard(chat_id))
 
-# ================== 5. ПРОФИЛЬ С ИСТОРИЕЙ ==================
+# ================== 5. ПРОФИЛЬ С ИСТОРИЙ ==================
 @bot.message_handler(func=lambda m: m.text == "👤 Профиль")
 def profile(message):
     chat_id = message.chat.id
@@ -573,8 +673,7 @@ def add_credits(message):
             bot.send_message(uid, f"🎉 Администратор начислил вам {amt} кредитов. Ваш баланс: {user_credits[uid]}")
         except Exception as e:
             logging.warning(f"Не удалось уведомить {uid}: {e}")
-    except Exception as e:
-        logging.error(f"Add credits error: {e}")
+    except:
         bot.send_message(message.chat.id, "Формат: /addcredits <user_id> <amount>")
 
 @bot.message_handler(commands=['removecredits'])
@@ -619,8 +718,8 @@ def menu_generate_image(message):
     user_state[chat_id] = "select_model_generate"
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
-        InlineKeyboardButton("🌱 Seedream 4.5 (2 кр.)", callback_data="gen_seedream"),
-        InlineKeyboardButton("🚀 Grok Imagine (2 кр.)", callback_data="gen_grok")
+        InlineKeyboardButton("💎 Nano Banana Pro (2 кр.)", callback_data="gen_nano"),
+        InlineKeyboardButton("⚡ Gemini Flash (2 кр.)", callback_data="gen_flash")
     )
     bot.send_message(message.chat.id, "Выбери модель для генерации:", reply_markup=markup)
 
@@ -631,8 +730,8 @@ def menu_edit_photo(message):
     user_state[chat_id] = "select_model_edit"
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
-        InlineKeyboardButton("🌱 Seedream 4.5 (3 кр.)", callback_data="edit_seedream"),
-        InlineKeyboardButton("🚀 Grok Imagine (3 кр.)", callback_data="edit_grok")
+        InlineKeyboardButton("💎 Nano Banana Pro (3 кр.)", callback_data="edit_nano"),
+        InlineKeyboardButton("⚡ Gemini Flash (3 кр.)", callback_data="edit_flash")
     )
     bot.send_message(message.chat.id, "Выбери модель редактирования:", reply_markup=markup)
 
@@ -669,11 +768,15 @@ def menu_shop(message):
 def back_to_main(message):
     chat_id = message.chat.id
     user_last_activity[chat_id] = time.time()
-    # Полная очистка всех состояний
-    for d in [user_state, user_edit_model, user_face_mode, user_generate_model,
-              user_pending_photo, user_video_frames, user_video_params,
-              user_video_model, user_video_mode]:
-        d.pop(chat_id, None)
+    user_state.pop(chat_id, None)
+    user_edit_model.pop(chat_id, None)
+    user_face_mode.pop(chat_id, None)
+    user_generate_model.pop(chat_id, None)
+    user_pending_photo.pop(chat_id, None)
+    user_video_frames.pop(chat_id, None)
+    user_video_params.pop(chat_id, None)
+    user_video_model.pop(chat_id, None)
+    user_video_mode.pop(chat_id, None)
     send_main_menu(chat_id)
 
 # Колбэки выбора видеомодели и параметров
@@ -762,10 +865,10 @@ def select_video_mode(call):
 def select_generate_model(call):
     chat_id = call.message.chat.id
     data = call.data
-    if data == 'gen_seedream':
-        user_generate_model[chat_id] = 'seedream'
-    elif data == 'gen_grok':
-        user_generate_model[chat_id] = 'grok'
+    if data == 'gen_nano':
+        user_generate_model[chat_id] = 'nano'
+    elif data == 'gen_flash':
+        user_generate_model[chat_id] = 'flash'
     bot.answer_callback_query(call.id, f"Выбрана модель: {data}")
     bot.delete_message(chat_id, call.message.message_id)
     user_state[chat_id] = "awaiting_generate_prompt"
@@ -775,10 +878,10 @@ def select_generate_model(call):
 def select_edit_model(call):
     chat_id = call.message.chat.id
     data = call.data
-    if data == 'edit_seedream':
-        user_edit_model[chat_id] = 'seedream'
-    elif data == 'edit_grok':
-        user_edit_model[chat_id] = 'grok'
+    if data == 'edit_nano':
+        user_edit_model[chat_id] = 'nano'
+    elif data == 'edit_flash':
+        user_edit_model[chat_id] = 'flash'
     bot.answer_callback_query(call.id, f"Выбрана модель: {data}")
     bot.delete_message(chat_id, call.message.message_id)
     markup = InlineKeyboardMarkup(row_width=2)
@@ -840,18 +943,18 @@ def handle_video_last_frame(message):
     user_state[chat_id] = None
     bot.send_message(chat_id, "🎥 Выберите видеомодель:", reply_markup=video_model_keyboard())
 
-# ================== ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЙ (с защитой от зависания) ==================
+# ================== ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЙ ==================
 @bot.message_handler(func=lambda m: user_state.get(m.chat.id) == "awaiting_generate_prompt")
 def handle_generate_prompt(message):
     chat_id = message.chat.id
     user_last_activity[chat_id] = time.time()
     prompt = message.text
-    model = user_generate_model.pop(chat_id, 'seedream')
+    model = user_generate_model.pop(chat_id, 'nano')
     user_state[chat_id] = None
 
     cost = CREDIT_COSTS['image_pro']
-    if chat_id != ADMIN_ID:
-        with data_lock:
+    with data_lock:
+        if chat_id != ADMIN_ID:
             if user_credits.get(chat_id, 0) < cost:
                 bot.send_message(chat_id, f"❌ Недостаточно кредитов. Нужно {cost} кредита.")
                 send_main_menu(chat_id)
@@ -861,32 +964,32 @@ def handle_generate_prompt(message):
             save_data()
             bot.send_message(chat_id, f"✅ Списано {cost} кредита. Осталось: {user_credits[chat_id]}")
 
-    model_id = 'bytedance-seed/seedream-4.5' if model == 'seedream' else 'x-ai/grok-imagine-image-quality'
     waiting = bot.send_message(chat_id, f"💎 Генерирую через {model}...")
-    img_data, error_msg = generate_image_pro(prompt, model_id)
+    if model == 'nano':
+        img_data = generate_image_nano(prompt)
+    else:  # flash
+        img_data = generate_image_flash(prompt)
 
-    try:
-        if img_data:
-            try:
-                img = Image.open(io.BytesIO(img_data))
-                img.thumbnail((800, 800), _safe_resample())
-                img = img.convert("RGB")
-                buf = io.BytesIO()
-                img.save(buf, format="JPEG", quality=85)
-                bot.send_photo(chat_id, buf.getvalue(), caption="✅ Готово!")
-            except Exception as e:
-                logging.error(f"Image send error: {e}")
-                bot.send_document(chat_id, img_data, caption="✅ Готово (файл)")
-        else:
-            with data_lock:
-                if chat_id != ADMIN_ID:
-                    user_credits[chat_id] += cost
-                    user_credit_history[chat_id].append((time.time(), cost, f"Возврат за генерацию {model}"))
-                    save_data()
-                    bot.send_message(chat_id, f"❌ Ошибка генерации. {cost} кредит возвращён.")
-            bot.send_message(chat_id, f"❌ Не удалось сгенерировать изображение.\n{error_msg}")
-    finally:
-        send_main_menu(chat_id)  # гарантированно возвращаем меню
+    if img_data:
+        try:
+            img = Image.open(io.BytesIO(img_data))
+            img.thumbnail((800, 800), _safe_resample())
+            img = img.convert("RGB")
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=85)
+            bot.send_photo(chat_id, buf.getvalue(), caption="✅ Готово!")
+        except Exception as e:
+            logging.error(f"Pro image send error: {e}")
+            bot.send_document(chat_id, img_data, caption="✅ Готово (файл)")
+    else:
+        with data_lock:
+            if chat_id != ADMIN_ID:
+                user_credits[chat_id] += cost
+                user_credit_history[chat_id].append((time.time(), cost, f"Возврат за генерацию {model}"))
+                save_data()
+                bot.send_message(chat_id, f"❌ Ошибка генерации. {cost} кредит возвращён.")
+        bot.send_message(chat_id, "❌ Не удалось сгенерировать изображение.")
+    send_main_menu(chat_id)
 
 # ================== РЕДАКТИРОВАНИЕ ФОТО ==================
 @bot.message_handler(content_types=['photo'], func=lambda m: user_state.get(m.chat.id) == "awaiting_photo")
@@ -910,7 +1013,7 @@ def handle_awaiting_prompt(message):
         send_main_menu(chat_id)
         return
 
-    model = user_edit_model.pop(chat_id, 'seedream')
+    model = user_edit_model.pop(chat_id, 'nano')
     face_mode = user_face_mode.pop(chat_id, 'full_edit')
     user_state[chat_id] = None
 
@@ -918,8 +1021,8 @@ def handle_awaiting_prompt(message):
         prompt = "Keep the face and facial features completely unchanged. Do not modify the face. Only apply the following changes: " + prompt
 
     cost = CREDIT_COSTS['edit_pro']
-    if chat_id != ADMIN_ID:
-        with data_lock:
+    with data_lock:
+        if chat_id != ADMIN_ID:
             if user_credits.get(chat_id, 0) < cost:
                 bot.send_message(chat_id, f"❌ Недостаточно кредитов. Нужно {cost} кредита.")
                 send_main_menu(chat_id)
@@ -929,42 +1032,42 @@ def handle_awaiting_prompt(message):
             save_data()
             bot.send_message(chat_id, f"✅ Списано {cost} кредита. Осталось: {user_credits[chat_id]}")
 
-    model_id = 'bytedance-seed/seedream-4.5' if model == 'seedream' else 'x-ai/grok-imagine-image-quality'
     waiting = bot.send_message(chat_id, f"🎨 Редактирую через {model}...")
-    img_data, error_msg = edit_image_pro(prompt, photo_base64, model_id)
+    if model == 'nano':
+        img_data, error_msg = edit_image_nano(prompt, photo_base64)
+    else:  # flash
+        img_data, error_msg = edit_image_flash(prompt, photo_base64)
 
-    try:
-        if img_data:
-            caption = f"✅ Отредактировано ({model})"
-            if face_mode == 'keep_face':
-                caption += " с сохранением лица"
-            try:
-                img = Image.open(io.BytesIO(img_data))
-                img.thumbnail((800, 800), _safe_resample())
-                img = img.convert("RGB")
-                buf = io.BytesIO()
-                img.save(buf, format="JPEG", quality=85)
-                bot.send_photo(chat_id, buf.getvalue(), caption=caption)
-            except Exception as e:
-                logging.error(f"Edit image send error: {e}")
-                bot.send_document(chat_id, img_data, caption=caption)
-        elif error_msg:
-            with data_lock:
-                if chat_id != ADMIN_ID:
-                    user_credits[chat_id] += cost
-                    user_credit_history[chat_id].append((time.time(), cost, f"Возврат за редактирование {model}"))
-                    save_data()
-                    bot.send_message(chat_id, f"❌ Ошибка редактирования. {cost} кредит возвращён.")
-            bot.send_message(chat_id, f"❌ Не удалось отредактировать изображение.\n{error_msg}")
-        else:
-            with data_lock:
-                if chat_id != ADMIN_ID:
-                    user_credits[chat_id] += cost
-                    user_credit_history[chat_id].append((time.time(), cost, "Возврат за редактирование (пустой ответ)"))
-                    save_data()
-                    bot.send_message(chat_id, "❌ Не удалось отредактировать изображение. Кредит возвращён.")
-    finally:
-        send_main_menu(chat_id)
+    if img_data:
+        caption = f"✅ Отредактировано ({model})"
+        if face_mode == 'keep_face':
+            caption += " с сохранением лица"
+        try:
+            img = Image.open(io.BytesIO(img_data))
+            img.thumbnail((800, 800), _safe_resample())
+            img = img.convert("RGB")
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=85)
+            bot.send_photo(chat_id, buf.getvalue(), caption=caption)
+        except Exception as e:
+            logging.error(f"Edit image send error: {e}")
+            bot.send_document(chat_id, img_data, caption=caption)
+    elif error_msg:
+        with data_lock:
+            if chat_id != ADMIN_ID:
+                user_credits[chat_id] += cost
+                user_credit_history[chat_id].append((time.time(), cost, f"Возврат за редактирование {model}"))
+                save_data()
+                bot.send_message(chat_id, f"❌ Ошибка редактирования. {cost} кредит возвращён.")
+        bot.send_message(chat_id, f"❌ Не удалось отредактировать изображение.\n{error_msg}")
+    else:
+        with data_lock:
+            if chat_id != ADMIN_ID:
+                user_credits[chat_id] += cost
+                user_credit_history[chat_id].append((time.time(), cost, "Возврат за редактирование (пустой ответ)"))
+                save_data()
+                bot.send_message(chat_id, "❌ Не удалось отредактировать изображение. Кредит возвращён.")
+    send_main_menu(chat_id)
 
 # Финальная генерация видео
 @bot.message_handler(func=lambda m: user_state.get(m.chat.id) == "awaiting_video_prompt")
@@ -978,6 +1081,9 @@ def handle_video_prompt(message):
     logging.info(f"Промт: {prompt}")
     first_frame = user_video_frames.get(chat_id, {}).get('first')
     last_frame = user_video_frames.get(chat_id, {}).get('last')
+
+    # Очищаем кадры, чтобы не использовать их повторно
+    user_video_frames.pop(chat_id, None)
 
     Thread(target=generate_video_async, args=(chat_id, prompt, first_frame, last_frame), daemon=True).start()
 
@@ -1005,23 +1111,26 @@ def handle_text_chat(message):
     if chat_id == ADMIN_ID:
         reply = ask_deepseek(message.text)
         bot.send_message(chat_id, reply, reply_markup=back_keyboard())
+        # Сохраняем активность админа
+        with data_lock:
+            save_data()
         return
 
-    # Проверяем, не пора ли списать кредит (каждые 50 сообщений)
+    # ИСПРАВЛЕННАЯ ЛОГИКА: проверяем баланс ДО увеличения счётчика
     with data_lock:
-        user_message_count[chat_id] += 1
-        count = user_message_count[chat_id]
+        current_count = user_message_count.get(chat_id, 0)
+        next_count = current_count + 1
+        pending_charge = False
 
-        if count >= 50:
+        if next_count >= 50:
             if user_credits.get(chat_id, 0) < CREDIT_COSTS['deepseek_session']:
-                user_message_count[chat_id] -= 1  # откатываем, чтобы не потерять сообщение
                 save_data()
                 bot.send_message(chat_id, "❌ Недостаточно кредитов для продолжения чата. Пополните баланс в магазине 💰.")
                 return
-            # Баланс есть, продолжаем. Списание будет после успешного ответа.
             pending_charge = True
-        else:
-            pending_charge = False
+
+        user_message_count[chat_id] = next_count
+        save_data()
 
     reply = ask_deepseek(message.text)
 
@@ -1034,13 +1143,17 @@ def handle_text_chat(message):
             save_data()
         bot.send_message(chat_id, f"💬 Использовано 50 сообщений. Списано {CREDIT_COSTS['deepseek_session']} кредит. Осталось: {user_credits[chat_id]} кредитов.")
     elif pending_charge:
-        # Ошибка API — откатываем счетчик
+        # Ошибка API — откатываем счётчик
         with data_lock:
             user_message_count[chat_id] -= 1
             save_data()
         bot.send_message(chat_id, "⚠️ Ошибка получения ответа. Кредит не списан.")
 
     bot.send_message(chat_id, reply, reply_markup=back_keyboard())
+
+    # Гарантированное сохранение после любого сообщения в чате
+    with data_lock:
+        save_data()
 
 @bot.message_handler(func=lambda m: True)
 def handle_other(message):
