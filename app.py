@@ -23,7 +23,6 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # --- ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-GIGACHAT_AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY")
 GIST_ID = os.getenv("GIST_ID")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
@@ -44,9 +43,9 @@ user_message_count = defaultdict(int)
 user_last_activity = defaultdict(float)
 
 user_state = {}
-user_edit_model = {}
+user_edit_model = {}        # 'nano' или 'flash'
 user_face_mode = {}
-user_generate_model = {}
+user_generate_model = {}    # 'nano' или 'flash'
 user_pending_photo = {}
 user_video_mode = {}
 user_video_frames = {}
@@ -146,64 +145,7 @@ CREDIT_COSTS = {
     'deepseek_session': 1,
 }
 
-# ================== 1. GIGACHAT ==================
-def get_gigachat_token():
-    if not GIGACHAT_AUTH_KEY:
-        return None
-    headers = {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Accept": "application/json",
-        "RqUID": str(uuid.uuid4()),
-        "Authorization": f"Basic {GIGACHAT_AUTH_KEY}"
-    }
-    data = {"scope": "GIGACHAT_API_PERS"}
-    try:
-        r = requests.post("https://ngw.devices.sberbank.ru:9443/api/v2/oauth",
-                          headers=headers, data=data, verify=False, timeout=30)
-        if r.status_code == 200:
-            return r.json().get("access_token")
-    except Exception as e:
-        logging.error(f"GigaChat token error: {e}")
-    return None
-
-def download_gigachat_file(token, file_id):
-    url = f"https://gigachat.devices.sberbank.ru/api/v1/files/{file_id}/content"
-    headers = {"Authorization": f"Bearer {token}", "Accept": "image/jpeg"}
-    try:
-        r = requests.get(url, headers=headers, verify=False, timeout=30)
-        if r.status_code == 200:
-            return r.content
-    except Exception as e:
-        logging.error(f"GigaChat download error: {e}")
-    return None
-
-def generate_gigachat_image(prompt):
-    token = get_gigachat_token()
-    if not token:
-        return None
-    url = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    payload = {
-        "model": "GigaChat",
-        "messages": [
-            {"role": "system", "content": "Ты — художник, создающий изображения."},
-            {"role": "user", "content": prompt}
-        ],
-        "function_call": "auto"
-    }
-    try:
-        r = requests.post(url, json=payload, headers=headers, timeout=60)
-        if r.status_code == 200:
-            data = r.json()
-            content = data['choices'][0]['message']['content']
-            match = re.search(r'src="([a-f0-9\-]+)"', content)
-            if match:
-                return download_gigachat_file(token, match.group(1))
-    except Exception as e:
-        logging.error(f"GigaChat generation error: {e}")
-    return None
-
-# ================== 2. DEEPSEEK V4 PRO ==================
+# ================== 1. DEEPSEEK V4 PRO ==================
 def ask_deepseek(prompt):
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
@@ -224,7 +166,7 @@ def ask_deepseek(prompt):
         return "⚠️ Ошибка соединения"
     return "❌ Ошибка API"
 
-# ================== 3. ГЕНЕРАЦИЯ / РЕДАКТИРОВАНИЕ (Chat API) ==================
+# ================== 2. ГЕНЕРАЦИЯ / РЕДАКТИРОВАНИЕ (Chat API) ==================
 def _safe_resample():
     try:
         return Image.Resampling.LANCZOS
@@ -381,7 +323,7 @@ def generate_image_flash(prompt):
         logging.error(f"Gemini Flash generation error: {e}")
     return None
 
-# ================== 4. ВИДЕО ==================
+# ================== 3. ВИДЕО ==================
 def compress_image_if_needed(b64_str, max_size=(640, 640), quality=80):
     try:
         img_data = base64.b64decode(b64_str)
@@ -548,7 +490,7 @@ def generate_video_async(chat_id, prompt, first_frame_b64=None, last_frame_b64=N
         bot.send_message(chat_id, "❌ Ошибка связи. Кредиты возвращены.")
     return False
 
-# ================== 5. КЛАВИАТУРЫ ==================
+# ================== 4. КЛАВИАТУРЫ ==================
 def main_menu_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(
@@ -606,7 +548,7 @@ def start_video_param_selection(chat_id):
     user_video_params[chat_id] = user_video_params.get(chat_id, {})
     bot.send_message(chat_id, "Настройте параметры видео, затем нажмите «Готово»:", reply_markup=video_params_keyboard(chat_id))
 
-# ================== 6. ПРОФИЛЬ С ИСТОРИЕЙ ==================
+# ================== 5. ПРОФИЛЬ С ИСТОРИЕЙ ==================
 @bot.message_handler(func=lambda m: m.text == "👤 Профиль")
 def profile(message):
     chat_id = message.chat.id
@@ -630,7 +572,7 @@ def goto_shop(call):
     bot.delete_message(call.message.chat.id, call.message.message_id)
     shop(call.message)
 
-# ================== 7. МАГАЗИН ==================
+# ================== 6. МАГАЗИН ==================
 @bot.message_handler(func=lambda m: m.text == "💰 Магазин")
 def shop(message):
     chat_id = message.chat.id
@@ -691,7 +633,7 @@ def process_payment(message):
 def pay_support(message):
     bot.send_message(message.chat.id, "Возврат средств осуществляется в течение 24 часов. Для запроса возврата свяжитесь с @Jastick_bot.")
 
-# ================== 8. АДМИН-ПАНЕЛЬ ==================
+# ================== 7. АДМИН-ПАНЕЛЬ ==================
 @bot.message_handler(commands=['admin'])
 def admin_panel(message):
     if message.chat.id != ADMIN_ID:
@@ -744,7 +686,7 @@ def remove_credits(message):
         logging.error(f"Remove credits error: {e}")
         bot.send_message(message.chat.id, "Формат: /removecredits <user_id> <amount>")
 
-# ================== 9. СТАРТ И ОСНОВНЫЕ ОБРАБОТЧИКИ ==================
+# ================== 8. СТАРТ И ОСНОВНЫЕ ОБРАБОТЧИКИ ==================
 @bot.message_handler(commands=['start'])
 def start(message):
     chat_id = message.chat.id
@@ -763,7 +705,6 @@ def menu_generate_image(message):
     user_state[chat_id] = "select_model_generate"
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
-        InlineKeyboardButton("🆓 GigaChat (бесплатно)", callback_data="gen_gigachat"),
         InlineKeyboardButton("💎 Nano Banana Pro (2 кр.)", callback_data="gen_nano"),
         InlineKeyboardButton("⚡ Gemini Flash (2 кр.)", callback_data="gen_flash")
     )
@@ -911,9 +852,7 @@ def select_video_mode(call):
 def select_generate_model(call):
     chat_id = call.message.chat.id
     data = call.data
-    if data == 'gen_gigachat':
-        user_generate_model[chat_id] = 'gigachat'
-    elif data == 'gen_nano':
+    if data == 'gen_nano':
         user_generate_model[chat_id] = 'nano'
     elif data == 'gen_flash':
         user_generate_model[chat_id] = 'flash'
@@ -997,27 +936,8 @@ def handle_generate_prompt(message):
     chat_id = message.chat.id
     user_last_activity[chat_id] = time.time()
     prompt = message.text
-    model = user_generate_model.pop(chat_id, 'gigachat')
+    model = user_generate_model.pop(chat_id, 'nano')
     user_state[chat_id] = None
-
-    if model == 'gigachat':
-        waiting = bot.send_message(chat_id, "🎨 Генерирую через GigaChat...")
-        img_data = generate_gigachat_image(prompt)
-        if img_data:
-            try:
-                img = Image.open(io.BytesIO(img_data))
-                img.thumbnail((800, 800), _safe_resample())
-                img = img.convert("RGB")
-                buf = io.BytesIO()
-                img.save(buf, format="JPEG", quality=85)
-                bot.send_photo(chat_id, buf.getvalue(), caption="✅ Готово!")
-            except Exception as e:
-                logging.error(f"GigaChat image send error: {e}")
-                bot.send_document(chat_id, img_data, caption="✅ Готово (файл)")
-        else:
-            bot.send_message(chat_id, "❌ Не удалось сгенерировать изображение.")
-        send_main_menu(chat_id)
-        return
 
     cost = CREDIT_COSTS['image_pro']
     with data_lock:
@@ -1216,7 +1136,7 @@ def handle_text_chat(message):
 def handle_other(message):
     bot.send_message(message.chat.id, "Пожалуйста, используй кнопки меню.")
 
-# ================== 10. ЗАПУСК ==================
+# ================== 9. ЗАПУСК ==================
 @app.route('/static/<path:filename>')
 def static_files(filename):
     return send_from_directory('static', filename)
