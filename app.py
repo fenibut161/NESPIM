@@ -26,6 +26,7 @@ GIGACHAT_AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY")
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_VIDEO_URL = "https://openrouter.ai/api/v1/videos"
+OPENROUTER_IMAGE_URL = "https://openrouter.ai/api/v1/images/generations"  # для Seedream / Grok
 
 ADMIN_ID = 534008787
 DEMO_VIDEO_URL = "https://your-server.com/static/demo.mp4"
@@ -49,6 +50,9 @@ user_video_params = {}
 user_video_model = {}
 user_credits = {}
 user_history = defaultdict(list)
+
+# Счётчик сообщений для DeepSeek (каждые 50 – списание 1 кредита)
+user_message_count = defaultdict(int)
 
 # Особенности видеомоделей
 VIDEO_MODEL_FEATURES = {
@@ -75,7 +79,8 @@ CREDIT_COSTS = {
         5: 25,
         10: 50,
         15: 100
-    }
+    },
+    'deepseek_session': 1,   # за 50 сообщений
 }
 
 # ================== 1. GIGACHAT ==================
@@ -135,10 +140,16 @@ def generate_gigachat_image(prompt):
         pass
     return None
 
-# ================== 2. OPENROUTER ТЕКСТ ==================
-def ask_openrouter_text(prompt):
-    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
-    payload = {"model": "openrouter/free", "messages": [{"role": "user", "content": prompt}]}
+# ================== 2. DEEPSEEK V4 PRO (текстовый помощник) ==================
+def ask_deepseek(prompt):
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "deepseek/deepseek-v4-pro",
+        "messages": [{"role": "user", "content": prompt}]
+    }
     try:
         r = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=90)
         if r.status_code == 200:
@@ -147,81 +158,56 @@ def ask_openrouter_text(prompt):
         return "⚠️ Ошибка соединения"
     return "❌ Ошибка API"
 
-# ================== 3. ГЕНЕРАЦИЯ / РЕДАКТИРОВАНИЕ (Seedream + Grok) ==================
+# ================== 3. ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЙ (Seedream / Grok через images/generations) ==================
 def generate_image_pro(prompt, model_id):
-    """
-    Генерация изображения через Seedream 4.5 или Grok Imagine.
-    model_id: 'bytedance-seed/seedream-4.5' или 'x-ai/grok-imagine-image-quality'
-    """
+    """Генерация через images/generations. model_id: 'bytedance-seed/seedream-4.5' или 'x-ai/grok-imagine-image-quality'"""
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://t.me/Jastick_bot",
-        "X-Title": "TelegramBot"
+        "Content-Type": "application/json"
     }
     payload = {
         "model": model_id,
-        "messages": [{"role": "user", "content": prompt}],
-        "modalities": ["image", "text"]
+        "prompt": prompt,
+        "n": 1,
+        "size": "1024x1024"
     }
     try:
-        r = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
+        r = requests.post(OPENROUTER_IMAGE_URL, json=payload, headers=headers, timeout=120)
         if r.status_code == 200:
             data = r.json()
-            msg = data["choices"][0]["message"]
-            if "images" in msg and msg["images"]:
-                img_url = msg["images"][0]["image_url"]["url"]
-            elif msg.get("content", "").startswith("data:image/"):
-                img_url = msg["content"]
-            else:
-                return None
-            if img_url.startswith("data:image/"):
-                return base64.b64decode(img_url.split(",", 1)[1])
-            else:
-                return requests.get(img_url).content
+            if "data" in data and len(data["data"]) > 0:
+                item = data["data"][0]
+                if "b64_json" in item:
+                    return base64.b64decode(item["b64_json"])
+                elif "url" in item:
+                    return requests.get(item["url"]).content
     except:
         pass
     return None
 
 def edit_image_pro(prompt, image_base64, model_id):
-    """
-    Редактирование изображения через Seedream 4.5 или Grok Imagine.
-    model_id: 'bytedance-seed/seedream-4.5' или 'x-ai/grok-imagine-image-quality'
-    """
-    short_prompt = prompt.split('.')[0].strip()[:300]
+    """Редактирование через images/generations (img2img). model_id: 'bytedance-seed/seedream-4.5' или 'x-ai/grok-imagine-image-quality'"""
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://t.me/Jastick_bot",
-        "X-Title": "TelegramBot"
+        "Content-Type": "application/json"
     }
     payload = {
         "model": model_id,
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": short_prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
-                ]
-            }
-        ],
-        "modalities": ["image", "text"]
+        "prompt": prompt,
+        "image": f"data:image/jpeg;base64,{image_base64}",
+        "n": 1,
+        "size": "1024x1024"
     }
     try:
-        r = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
+        r = requests.post(OPENROUTER_IMAGE_URL, json=payload, headers=headers, timeout=120)
         if r.status_code == 200:
-            msg = r.json()["choices"][0]["message"]
-            if "images" in msg and msg["images"]:
-                img_url = msg["images"][0]["image_url"]["url"]
-            elif msg.get("content", "").startswith("data:image/"):
-                img_url = msg["content"]
-            else:
-                return None, msg.get("content")
-            if img_url.startswith("data:image/"):
-                return base64.b64decode(img_url.split(",", 1)[1]), None
-            else:
-                return requests.get(img_url).content, None
+            data = r.json()
+            if "data" in data and len(data["data"]) > 0:
+                item = data["data"][0]
+                if "b64_json" in item:
+                    return base64.b64decode(item["b64_json"]), None
+                elif "url" in item:
+                    return requests.get(item["url"]).content, None
     except:
         pass
     return None, None
@@ -473,7 +459,7 @@ def goto_shop(call):
 @bot.message_handler(func=lambda m: m.text == "💰 Магазин")
 def shop(message):
     chat_id = message.chat.id
-    text = "🛒 *Магазин кредитов*\n1 кредит позволяет:\n• Генерация Pro — 2 кредита\n• Редактирование Pro — 3 кредита\n• Видео 5 сек — 25 кр., 10 сек — 50 кр., 15 сек — 100 кр.\n\nВыберите пакет:"
+    text = "🛒 *Магазин кредитов*\n1 кредит позволяет:\n• Генерация Pro — 2 кредита\n• Редактирование Pro — 3 кредита\n• Видео 5 сек — 25 кр., 10 сек — 50 кр., 15 сек — 100 кр.\n• Чат с ИИ — 1 кредит за 50 сообщений\n\nВыберите пакет:"
     markup = InlineKeyboardMarkup(row_width=1)
     for key, pkg in PACKAGES.items():
         text += f"\n*{pkg['name']}*: {pkg['credits']} кредитов — {pkg['price']} ⭐️"
@@ -610,7 +596,7 @@ def menu_video(message):
 @bot.message_handler(func=lambda m: m.text == "💬 Спросить (чат)")
 def menu_chat(message):
     user_state[message.chat.id] = None
-    bot.send_message(message.chat.id, "Задай любой вопрос. Для возврата нажми «🔙 Главное меню»", reply_markup=back_keyboard())
+    bot.send_message(message.chat.id, "Задай любой вопрос (DeepSeek V4 Pro). Каждые 50 сообщений списывается 1 кредит.", reply_markup=back_keyboard())
 
 @bot.message_handler(func=lambda m: m.text == "🔙 Главное меню")
 def back_to_main(message):
@@ -785,7 +771,7 @@ def handle_video_last_frame(message):
     user_state[chat_id] = None
     bot.send_message(chat_id, "🎥 Выберите видеомодель:", reply_markup=video_model_keyboard())
 
-# ================== ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЙ (Seedream / Grok) ==================
+# ================== ГЕНЕРАЦИЯ ИЗОБРАЖЕНИЙ ==================
 @bot.message_handler(func=lambda m: user_state.get(m.chat.id) == "awaiting_generate_prompt")
 def handle_generate_prompt(message):
     chat_id = message.chat.id
@@ -811,16 +797,18 @@ def handle_generate_prompt(message):
         send_main_menu(chat_id)
         return
 
-    # Seedream или Grok
-    model_id = 'bytedance-seed/seedream-4.5' if model == 'seedream' else 'x-ai/grok-imagine-image-quality'
+    # Платные модели
     cost = CREDIT_COSTS['image_pro']
     if chat_id != ADMIN_ID:
         if user_credits.get(chat_id, 0) < cost:
             bot.send_message(chat_id, f"❌ Недостаточно кредитов. Нужно {cost} кредита.")
             send_main_menu(chat_id)
             return
+
+    model_id = 'bytedance-seed/seedream-4.5' if model == 'seedream' else 'x-ai/grok-imagine-image-quality'
     waiting = bot.send_message(chat_id, f"💎 Генерирую через {model}...")
     img_data = generate_image_pro(prompt, model_id)
+
     if img_data:
         if chat_id != ADMIN_ID:
             user_credits[chat_id] -= cost
@@ -838,7 +826,7 @@ def handle_generate_prompt(message):
         bot.send_message(chat_id, "❌ Не удалось сгенерировать изображение. Кредиты не списаны.")
     send_main_menu(chat_id)
 
-# ================== РЕДАКТИРОВАНИЕ ФОТО (Seedream / Grok) ==================
+# ================== РЕДАКТИРОВАНИЕ ФОТО ==================
 @bot.message_handler(content_types=['photo'], func=lambda m: user_state.get(m.chat.id) == "awaiting_photo")
 def handle_awaiting_photo(message):
     chat_id = message.chat.id
@@ -865,7 +853,6 @@ def handle_awaiting_prompt(message):
     if face_mode == 'keep_face':
         prompt = "Keep the face and facial features completely unchanged. Do not modify the face. Only apply the following changes: " + prompt
 
-    model_id = 'bytedance-seed/seedream-4.5' if model == 'seedream' else 'x-ai/grok-imagine-image-quality'
     cost = CREDIT_COSTS['edit_pro']
     if chat_id != ADMIN_ID:
         if user_credits.get(chat_id, 0) < cost:
@@ -873,6 +860,7 @@ def handle_awaiting_prompt(message):
             send_main_menu(chat_id)
             return
 
+    model_id = 'bytedance-seed/seedream-4.5' if model == 'seedream' else 'x-ai/grok-imagine-image-quality'
     waiting = bot.send_message(chat_id, f"🎨 Редактирую через {model}...")
     img_data, text = edit_image_pro(prompt, photo_base64, model_id)
 
@@ -912,7 +900,7 @@ def handle_video_prompt(message):
 
     Thread(target=generate_video_async, args=(chat_id, prompt, first_frame, last_frame), daemon=True).start()
 
-# Чат
+# ================== ЧАТ С DEEPSEEK (с тарификацией) ==================
 @bot.message_handler(func=lambda m: True, content_types=['text'])
 def handle_text_chat(message):
     if message.text.startswith('/'):
@@ -920,8 +908,21 @@ def handle_text_chat(message):
     state = user_state.get(message.chat.id)
     if state in ["awaiting_prompt", "awaiting_generate_prompt", "awaiting_photo", "awaiting_video_prompt", "awaiting_video_image_first", "awaiting_video_image_last", "select_video_model"]:
         return
-    reply = ask_openrouter_text(message.text)
-    bot.send_message(message.chat.id, reply, reply_markup=back_keyboard())
+
+    chat_id = message.chat.id
+    # Проверка и списание кредитов за чат
+    if chat_id != ADMIN_ID:
+        user_message_count[chat_id] += 1
+        if user_message_count[chat_id] % 50 == 0:
+            cost = CREDIT_COSTS['deepseek_session']
+            if user_credits.get(chat_id, 0) < cost:
+                bot.send_message(chat_id, "❌ Недостаточно кредитов для продолжения чата. Пополните баланс в магазине 💰.")
+                return
+            user_credits[chat_id] -= cost
+            bot.send_message(chat_id, f"💬 Вы использовали 50 сообщений. Списано {cost} кредит. Осталось: {user_credits[chat_id]} кредитов.")
+
+    reply = ask_deepseek(message.text)
+    bot.send_message(chat_id, reply, reply_markup=back_keyboard())
 
 @bot.message_handler(func=lambda m: True)
 def handle_other(message):
