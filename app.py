@@ -24,13 +24,13 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 GIGACHAT_AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY")
+GIST_ID = os.getenv("GIST_ID")
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_VIDEO_URL = "https://openrouter.ai/api/v1/videos"
-OPENROUTER_IMAGE_URL = "https://openrouter.ai/api/v1/images/generations"
 
 ADMIN_ID = 534008787
-DEMO_VIDEO_URL = "https://your-server.com/static/demo.mp4"
 
 DATA_FILE = "bot_data.json"
 data_lock = Lock()
@@ -52,42 +52,41 @@ user_video_mode = {}
 user_video_frames = {}
 user_video_params = {}
 user_video_model = {}
-user_history = defaultdict(list)
+user_video_history = defaultdict(list)
 
-# --- ОЧИСТКА НЕАКТИВНЫХ ---
-def cleanup_inactive_users():
-    cutoff = time.time() - MAX_INACTIVITY_MINUTES * 60
-    keys_to_remove = []
-    with data_lock:
-        for uid, last in list(user_last_activity.items()):
-            if last < cutoff:
-                keys_to_remove.append(uid)
-        for uid in keys_to_remove:
-            for d in (user_credits, user_credit_history, user_message_count, user_last_activity):
-                d.pop(uid, None)
-            for d in (user_state, user_edit_model, user_face_mode, user_generate_model,
-                      user_pending_photo, user_video_mode, user_video_frames,
-                      user_video_params, user_video_model, user_history):
-                d.pop(uid, None)
-    if keys_to_remove:
-        logging.info(f"Очищено {len(keys_to_remove)} неактивных пользователей")
-
-# --- ЗАГРУЗКА / СОХРАНЕНИЕ ДАННЫХ ---
+# --- СИНХРОНИЗАЦИЯ С GITHUB GIST ---
 def load_data():
     global user_credits, user_credit_history, user_message_count, user_last_activity
-    try:
-        with open(DATA_FILE, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        with data_lock:
+    if not GIST_ID or not GITHUB_TOKEN:
+        logging.warning("GIST_ID или GITHUB_TOKEN не заданы. Использую локальный файл.")
+        try:
+            with open(DATA_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
             user_credits = defaultdict(int, data.get('credits', {}))
             user_credit_history = defaultdict(list, data.get('history', {}))
             user_message_count = defaultdict(int, data.get('messages', {}))
             user_last_activity = defaultdict(float, data.get('last_activity', {}))
-        logging.info(f"Данные загружены: {len(user_credits)} пользователей")
-    except FileNotFoundError:
-        logging.info("Файл данных не найден, начинаем с нуля")
+        except FileNotFoundError:
+            logging.info("Локальный файл не найден, начинаем с нуля")
+        return
+
+    url = f"https://api.github.com/gists/{GIST_ID}"
+    headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+    try:
+        r = requests.get(url, headers=headers, timeout=30)
+        if r.status_code == 200:
+            gist_data = r.json()
+            content = gist_data['files']['bot_data.json']['content']
+            data = json.loads(content)
+            user_credits = defaultdict(int, data.get('credits', {}))
+            user_credit_history = defaultdict(list, data.get('history', {}))
+            user_message_count = defaultdict(int, data.get('messages', {}))
+            user_last_activity = defaultdict(float, data.get('last_activity', {}))
+            logging.info("Данные загружены из Gist")
+        else:
+            logging.error(f"Ошибка загрузки из Gist: {r.status_code}")
     except Exception as e:
-        logging.error(f"Ошибка загрузки данных: {e}")
+        logging.error(f"Исключение при загрузке из Gist: {e}")
 
 def save_data():
     with data_lock:
@@ -97,10 +96,23 @@ def save_data():
             'messages': dict(user_message_count),
             'last_activity': {k: v for k, v in user_last_activity.items()}
         }
-        tmp_file = DATA_FILE + ".tmp"
-        with open(tmp_file, 'w', encoding='utf-8') as f:
+        # Локальный файл (резерв)
+        with open(DATA_FILE, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp_file, DATA_FILE)
+
+        # GitHub Gist
+        if GIST_ID and GITHUB_TOKEN:
+            url = f"https://api.github.com/gists/{GIST_ID}"
+            headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+            payload = {"files": {"bot_data.json": {"content": json.dumps(data, ensure_ascii=False, indent=2)}}}
+            try:
+                r = requests.patch(url, json=payload, headers=headers, timeout=30)
+                if r.status_code == 200:
+                    logging.info("Данные сохранены в Gist")
+                else:
+                    logging.error(f"Ошибка сохранения в Gist: {r.status_code} {r.text}")
+            except Exception as e:
+                logging.error(f"Исключение при сохранении в Gist: {e}")
 
 # --- ИНИЦИАЛИЗАЦИЯ ДАННЫХ ---
 load_data()
@@ -187,7 +199,6 @@ def generate_gigachat_image(prompt):
             match = re.search(r'src="([a-f0-9\-]+)"', content)
             if match:
                 return download_gigachat_file(token, match.group(1))
-            logging.warning(f"GigaChat: не найден file_id в ответе: {content[:200]}")
     except Exception as e:
         logging.error(f"GigaChat generation error: {e}")
     return None
@@ -213,71 +224,162 @@ def ask_deepseek(prompt):
         return "⚠️ Ошибка соединения"
     return "❌ Ошибка API"
 
-# ================== 3. ГЕНЕРАЦИЯ / РЕДАКТИРОВАНИЕ (Images API) ==================
+# ================== 3. ГЕНЕРАЦИЯ / РЕДАКТИРОВАНИЕ (Chat API) ==================
 def _safe_resample():
     try:
         return Image.Resampling.LANCZOS
     except AttributeError:
         return Image.LANCZOS
 
-def generate_image_pro(prompt, model_id):
+def edit_image_nano(prompt, image_base64):
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://t.me/Jastick_bot",
+        "X-Title": "TelegramBot"
     }
     payload = {
-        "model": model_id,
-        "prompt": prompt,
-        "n": 1,
-        "size": "1024x1024"
+        "model": "google/gemini-3-pro-image-preview",
+        "messages": [
+            {
+                "role": "system",
+                "content": "Ты — редактор изображений. Отредактируй прикреплённое изображение по описанию пользователя и верни только готовое изображение. Не добавляй текст."
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
+                ]
+            }
+        ],
+        "modalities": ["image", "text"]
     }
     try:
-        r = requests.post(OPENROUTER_IMAGE_URL, json=payload, headers=headers, timeout=120)
-        if r.status_code == 200:
-            data = r.json()
-            if "data" in data and len(data["data"]) > 0:
-                item = data["data"][0]
-                if "b64_json" in item:
-                    return base64.b64decode(item["b64_json"]), None
-                elif "url" in item:
-                    return requests.get(item["url"], timeout=30).content, None
+        resp = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
+        if resp.status_code == 200:
+            data = resp.json()
+            msg = data["choices"][0]["message"]
+            if "images" in msg and msg["images"]:
+                img_url = msg["images"][0]["image_url"]["url"]
+            elif msg.get("content", "").startswith("data:image/"):
+                img_url = msg["content"]
+            else:
+                return None, msg.get("content")
+            if img_url.startswith("data:image/"):
+                return base64.b64decode(img_url.split(",", 1)[1]), None
+            else:
+                return requests.get(img_url, timeout=30).content, None
         else:
-            logging.error(f"Image generation error {r.status_code}: {r.text[:200]}")
-            return None, f"Ошибка API: {r.status_code} – {r.text[:200]}"
+            logging.error(f"Gemini Pro edit error: {resp.status_code} {resp.text[:200]}")
+            return None, f"Ошибка API: {resp.status_code}"
     except Exception as e:
-        logging.error(f"Image generation exception: {e}")
+        logging.error(f"Gemini Pro edit exception: {e}")
         return None, str(e)
-    return None, "Пустой ответ"
 
-def edit_image_pro(prompt, image_base64, model_id):
+def edit_image_flash(prompt, image_base64):
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://t.me/Jastick_bot",
+        "X-Title": "TelegramBot"
     }
     payload = {
-        "model": model_id,
-        "prompt": prompt,
-        "image": f"data:image/jpeg;base64,{image_base64}",
-        "n": 1,
-        "size": "1024x1024"
+        "model": "google/gemini-2.5-flash-image",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
+                ]
+            }
+        ],
+        "modalities": ["image", "text"]
     }
     try:
-        r = requests.post(OPENROUTER_IMAGE_URL, json=payload, headers=headers, timeout=120)
+        resp = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
+        if resp.status_code == 200:
+            data = resp.json()
+            msg = data["choices"][0]["message"]
+            if "images" in msg and msg["images"]:
+                img_url = msg["images"][0]["image_url"]["url"]
+            elif msg.get("content", "").startswith("data:image/"):
+                img_url = msg["content"]
+            else:
+                return None, msg.get("content")
+            if img_url.startswith("data:image/"):
+                return base64.b64decode(img_url.split(",", 1)[1]), None
+            else:
+                return requests.get(img_url, timeout=30).content, None
+        else:
+            logging.error(f"Gemini Flash edit error: {resp.status_code} {resp.text[:200]}")
+            return None, f"Ошибка API: {resp.status_code}"
+    except Exception as e:
+        logging.error(f"Gemini Flash edit exception: {e}")
+        return None, str(e)
+
+def generate_image_nano(prompt):
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://t.me/Jastick_bot",
+        "X-Title": "TelegramBot"
+    }
+    payload = {
+        "model": "google/gemini-3-pro-image-preview",
+        "messages": [{"role": "user", "content": prompt}],
+        "modalities": ["image", "text"]
+    }
+    try:
+        r = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
         if r.status_code == 200:
             data = r.json()
-            if "data" in data and len(data["data"]) > 0:
-                item = data["data"][0]
-                if "b64_json" in item:
-                    return base64.b64decode(item["b64_json"]), None
-                elif "url" in item:
-                    return requests.get(item["url"], timeout=30).content, None
-        else:
-            logging.error(f"Image edit error {r.status_code}: {r.text[:200]}")
-            return None, f"Ошибка API: {r.status_code} – {r.text[:200]}"
+            msg = data["choices"][0]["message"]
+            if "images" in msg and msg["images"]:
+                img_url = msg["images"][0]["image_url"]["url"]
+            elif msg.get("content", "").startswith("data:image/"):
+                img_url = msg["content"]
+            else:
+                return None
+            if img_url.startswith("data:image/"):
+                return base64.b64decode(img_url.split(",", 1)[1])
+            else:
+                return requests.get(img_url, timeout=30).content
     except Exception as e:
-        logging.error(f"Image edit exception: {e}")
-        return None, str(e)
-    return None, "Пустой ответ"
+        logging.error(f"Gemini Pro generation error: {e}")
+    return None
+
+def generate_image_flash(prompt):
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://t.me/Jastick_bot",
+        "X-Title": "TelegramBot"
+    }
+    payload = {
+        "model": "google/gemini-2.5-flash-image",
+        "messages": [{"role": "user", "content": prompt}],
+        "modalities": ["image", "text"]
+    }
+    try:
+        r = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=120)
+        if r.status_code == 200:
+            data = r.json()
+            msg = data["choices"][0]["message"]
+            if "images" in msg and msg["images"]:
+                img_url = msg["images"][0]["image_url"]["url"]
+            elif msg.get("content", "").startswith("data:image/"):
+                img_url = msg["content"]
+            else:
+                return None
+            if img_url.startswith("data:image/"):
+                return base64.b64decode(img_url.split(",", 1)[1])
+            else:
+                return requests.get(img_url, timeout=30).content
+    except Exception as e:
+        logging.error(f"Gemini Flash generation error: {e}")
+    return None
 
 # ================== 4. ВИДЕО ==================
 def compress_image_if_needed(b64_str, max_size=(640, 640), quality=80):
@@ -300,9 +402,9 @@ def _send_video_safe(chat_id, data, caption="✅ Ваше видео готов�
         video_file = io.BytesIO(data)
         video_file.name = "video.mp4"
         msg = bot.send_video(chat_id, video_file, caption=caption, supports_streaming=True, timeout=120)
-        user_history[chat_id].append(msg.video.file_id)
-        if len(user_history[chat_id]) > 3:
-            user_history[chat_id].pop(0)
+        user_video_history[chat_id].append(msg.video.file_id)
+        if len(user_video_history[chat_id]) > 3:
+            user_video_history[chat_id].pop(0)
         return True
     except Exception as e:
         logging.error(f"send_video error: {e}")
@@ -649,12 +751,6 @@ def start(message):
     user_last_activity[chat_id] = time.time()
     user_state[chat_id] = None
     send_main_menu(chat_id, "👋 Привет! Я умею генерировать изображения, редактировать фото и создавать видео. Выбери действие в меню ниже.")
-    try:
-        vr = requests.get(DEMO_VIDEO_URL, timeout=30)
-        if vr.status_code == 200 and _is_valid_mp4(vr.content):
-            bot.send_video(chat_id, vr.content, caption="🎬 Пример работы (видео создано ботом)")
-    except Exception:
-        pass
 
 def send_main_menu(chat_id, text="Главное меню:"):
     bot.send_message(chat_id, text, reply_markup=main_menu_keyboard())
@@ -668,8 +764,8 @@ def menu_generate_image(message):
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("🆓 GigaChat (бесплатно)", callback_data="gen_gigachat"),
-        InlineKeyboardButton("🌱 Seedream 4.5 (2 кр.)", callback_data="gen_seedream"),
-        InlineKeyboardButton("🚀 Grok Imagine (2 кр.)", callback_data="gen_grok")
+        InlineKeyboardButton("💎 Nano Banana Pro (2 кр.)", callback_data="gen_nano"),
+        InlineKeyboardButton("⚡ Gemini Flash (2 кр.)", callback_data="gen_flash")
     )
     bot.send_message(message.chat.id, "Выбери модель для генерации:", reply_markup=markup)
 
@@ -680,8 +776,8 @@ def menu_edit_photo(message):
     user_state[chat_id] = "select_model_edit"
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
-        InlineKeyboardButton("🌱 Seedream 4.5 (3 кр.)", callback_data="edit_seedream"),
-        InlineKeyboardButton("🚀 Grok Imagine (3 кр.)", callback_data="edit_grok")
+        InlineKeyboardButton("💎 Nano Banana Pro (3 кр.)", callback_data="edit_nano"),
+        InlineKeyboardButton("⚡ Gemini Flash (3 кр.)", callback_data="edit_flash")
     )
     bot.send_message(message.chat.id, "Выбери модель редактирования:", reply_markup=markup)
 
@@ -817,10 +913,10 @@ def select_generate_model(call):
     data = call.data
     if data == 'gen_gigachat':
         user_generate_model[chat_id] = 'gigachat'
-    elif data == 'gen_seedream':
-        user_generate_model[chat_id] = 'seedream'
-    elif data == 'gen_grok':
-        user_generate_model[chat_id] = 'grok'
+    elif data == 'gen_nano':
+        user_generate_model[chat_id] = 'nano'
+    elif data == 'gen_flash':
+        user_generate_model[chat_id] = 'flash'
     bot.answer_callback_query(call.id, f"Выбрана модель: {data}")
     bot.delete_message(chat_id, call.message.message_id)
     user_state[chat_id] = "awaiting_generate_prompt"
@@ -830,10 +926,10 @@ def select_generate_model(call):
 def select_edit_model(call):
     chat_id = call.message.chat.id
     data = call.data
-    if data == 'edit_seedream':
-        user_edit_model[chat_id] = 'seedream'
-    elif data == 'edit_grok':
-        user_edit_model[chat_id] = 'grok'
+    if data == 'edit_nano':
+        user_edit_model[chat_id] = 'nano'
+    elif data == 'edit_flash':
+        user_edit_model[chat_id] = 'flash'
     bot.answer_callback_query(call.id, f"Выбрана модель: {data}")
     bot.delete_message(chat_id, call.message.message_id)
     markup = InlineKeyboardMarkup(row_width=2)
@@ -935,9 +1031,11 @@ def handle_generate_prompt(message):
             save_data()
             bot.send_message(chat_id, f"✅ Списано {cost} кредита. Осталось: {user_credits[chat_id]}")
 
-    model_id = 'bytedance-seed/seedream-4.5' if model == 'seedream' else 'x-ai/grok-imagine-image-quality'
     waiting = bot.send_message(chat_id, f"💎 Генерирую через {model}...")
-    img_data, error_msg = generate_image_pro(prompt, model_id)
+    if model == 'nano':
+        img_data = generate_image_nano(prompt)
+    else:  # flash
+        img_data = generate_image_flash(prompt)
 
     if img_data:
         try:
@@ -957,7 +1055,7 @@ def handle_generate_prompt(message):
                 user_credit_history[chat_id].append((time.time(), cost, f"Возврат за генерацию {model}"))
                 save_data()
                 bot.send_message(chat_id, f"❌ Ошибка генерации. {cost} кредит возвращён.")
-        bot.send_message(chat_id, f"❌ Не удалось сгенерировать изображение.\n{error_msg}")
+        bot.send_message(chat_id, "❌ Не удалось сгенерировать изображение.")
     send_main_menu(chat_id)
 
 # ================== РЕДАКТИРОВАНИЕ ФОТО ==================
@@ -982,7 +1080,7 @@ def handle_awaiting_prompt(message):
         send_main_menu(chat_id)
         return
 
-    model = user_edit_model.pop(chat_id, 'seedream')
+    model = user_edit_model.pop(chat_id, 'nano')
     face_mode = user_face_mode.pop(chat_id, 'full_edit')
     user_state[chat_id] = None
 
@@ -1001,9 +1099,11 @@ def handle_awaiting_prompt(message):
             save_data()
             bot.send_message(chat_id, f"✅ Списано {cost} кредита. Осталось: {user_credits[chat_id]}")
 
-    model_id = 'bytedance-seed/seedream-4.5' if model == 'seedream' else 'x-ai/grok-imagine-image-quality'
     waiting = bot.send_message(chat_id, f"🎨 Редактирую через {model}...")
-    img_data, error_msg = edit_image_pro(prompt, photo_base64, model_id)
+    if model == 'nano':
+        img_data, error_msg = edit_image_nano(prompt, photo_base64)
+    else:  # flash
+        img_data, error_msg = edit_image_flash(prompt, photo_base64)
 
     if img_data:
         caption = f"✅ Отредактировано ({model})"
@@ -1140,6 +1240,5 @@ def index():
     return "Bot is running"
 
 if __name__ == "__main__":
-    cleanup_inactive_users()
     Thread(target=run_bot, daemon=True).start()
     app.run(host='0.0.0.0', port=8080)
