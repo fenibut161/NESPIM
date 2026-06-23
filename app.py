@@ -31,7 +31,7 @@ OPENROUTER_VIDEO_URL = "https://openrouter.ai/api/v1/videos"
 ADMIN_ID = 534008787
 
 DATA_FILE = "bot_data.json"
-data_lock = RLock()  # <-- ИСПРАВЛЕНО: RLock вместо Lock
+data_lock = RLock()
 
 # --- LOGGING ---
 logging.basicConfig(
@@ -50,6 +50,7 @@ user_state = {}
 user_edit_model = {}
 user_face_mode = {}
 user_generate_model = {}
+user_generate_aspect = {}
 user_pending_photo = {}
 user_video_mode = {}
 user_video_frames = {}
@@ -57,9 +58,21 @@ user_video_params = {}
 user_video_model = {}
 user_video_history = defaultdict(list)
 
+# --- CHAIN EDIT ---
+user_last_image = {}          # base64 последнего результата редактирования
+user_last_edit_model = {}     # модель, которой редактировали
+user_last_face_mode = {}      # режим лица, который был применён
+
 # --- MODELS ---
 FLUX_MODEL = "black-forest-labs/flux.2-pro"
 SEEDREAM_MODEL = "bytedance-seed/seedream-4.5"
+
+ASPECT_PROMPTS = {
+    "9:16": "vertical 9:16 portrait orientation, tall composition, full frame, mobile phone wallpaper format",
+    "16:9": "horizontal 16:9 widescreen landscape orientation, cinematic wide composition",
+    "1:1": "square 1:1 composition, Instagram post format, centered subject",
+    "4:3": "standard 4:3 photo composition, classic portrait or landscape ratio",
+}
 
 # --- GIST SYNC ---
 def load_data():
@@ -67,7 +80,6 @@ def load_data():
     data = None
     source = "fresh"
 
-    # 1. Пробуем Gist
     if GIST_ID and GITHUB_TOKEN:
         url = f"https://api.github.com/gists/{GIST_ID}"
         headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
@@ -93,7 +105,6 @@ def load_data():
         except Exception as e:
             logging.error(f"[LOAD] Gist exception: {e}")
 
-    # 2. Пробуем локальный файл
     if data is None:
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as fh:
@@ -121,7 +132,6 @@ def save_data():
             "messages": dict(user_message_count),
             "last_activity": dict(user_last_activity),
         }
-        # Локально
         try:
             with open(DATA_FILE, "w", encoding="utf-8") as fh:
                 json.dump(data, fh, ensure_ascii=False, indent=2)
@@ -129,7 +139,6 @@ def save_data():
         except Exception as e:
             logging.error(f"[SAVE] Local file error: {e}")
 
-        # Gist
         if GIST_ID and GITHUB_TOKEN:
             try:
                 url = f"https://api.github.com/gists/{GIST_ID}"
@@ -222,6 +231,24 @@ def _build_headers():
         "HTTP-Referer": "https://t.me/Jastick_bot",
         "X-Title": "TelegramBot",
     }
+
+def _prepare_image_bytes(img_data, quality=95, max_size_mb=5):
+    """Конвертирует в JPEG, сохраняя оригинальное разрешение. Сжимает только если > max_size_mb."""
+    try:
+        img = Image.open(io.BytesIO(img_data))
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=quality, optimize=True)
+        output = buf.getvalue()
+        # Если всё ещё больше лимита — уменьшаем качество
+        if len(output) > max_size_mb * 1024 * 1024 and quality > 60:
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=75, optimize=True)
+            output = buf.getvalue()
+        return output, None
+    except Exception as e:
+        return None, str(e)
 
 # ================== FLUX ==================
 def generate_image_flux(prompt):
@@ -806,11 +833,15 @@ def back_to_main(message):
     user_edit_model.pop(chat_id, None)
     user_face_mode.pop(chat_id, None)
     user_generate_model.pop(chat_id, None)
+    user_generate_aspect.pop(chat_id, None)
     user_pending_photo.pop(chat_id, None)
     user_video_frames.pop(chat_id, None)
     user_video_params.pop(chat_id, None)
     user_video_model.pop(chat_id, None)
     user_video_mode.pop(chat_id, None)
+    user_last_image.pop(chat_id, None)
+    user_last_edit_model.pop(chat_id, None)
+    user_last_face_mode.pop(chat_id, None)
     send_main_menu(chat_id)
 
 # ================== CALLBACKS ==================
@@ -894,6 +925,7 @@ def select_video_mode(call):
         bot.send_message(chat_id, "📸 Загрузи ПЕРВЫЙ кадр (начальное изображение):", reply_markup=back_keyboard())
     bot.answer_callback_query(call.id)
 
+# --- GENERATION: model → aspect → prompt ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith("gen_"))
 def select_generate_model(call):
     chat_id = call.message.chat.id
@@ -904,8 +936,26 @@ def select_generate_model(call):
         user_generate_model[chat_id] = "seedream"
     bot.answer_callback_query(call.id, f"Выбрана модель: {data}")
     bot.delete_message(chat_id, call.message.message_id)
+    # Выбор формата
+    user_state[chat_id] = "selecting_aspect"
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("📱 9:16 (сторис/телефон)", callback_data="aspect_9_16"),
+        InlineKeyboardButton("🖥 16:9 (широкий)", callback_data="aspect_16_9"),
+        InlineKeyboardButton("⬜ 1:1 (квадрат/инста)", callback_data="aspect_1_1"),
+        InlineKeyboardButton("📷 4:3 (фото)", callback_data="aspect_4_3"),
+    )
+    bot.send_message(chat_id, "Выберите формат изображения:", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("aspect_"))
+def set_aspect(call):
+    chat_id = call.message.chat.id
+    aspect = call.data.split("_")[1] + ":" + call.data.split("_")[2]
+    user_generate_aspect[chat_id] = aspect
+    bot.delete_message(chat_id, call.message.message_id)
     user_state[chat_id] = "awaiting_generate_prompt"
-    bot.send_message(chat_id, "Введи описание изображения:", reply_markup=back_keyboard())
+    bot.send_message(chat_id, f"Формат: {aspect}. Введите описание изображения:", reply_markup=back_keyboard())
+    bot.answer_callback_query(call.id, f"Формат {aspect}")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("edit_"))
 def select_edit_model(call):
@@ -935,6 +985,20 @@ def select_face_mode(call):
     bot.delete_message(chat_id, call.message.message_id)
     user_state[chat_id] = "awaiting_photo"
     bot.send_message(chat_id, "📸 Загрузи фото, которое нужно отредактировать.", reply_markup=back_keyboard())
+
+# --- CHAIN EDIT: continue editing result ---
+@bot.callback_query_handler(func=lambda call: call.data == "edit_again")
+def edit_again(call):
+    chat_id = call.message.chat.id
+    if chat_id not in user_last_image:
+        bot.answer_callback_query(call.id, "Нет сохранённого фото")
+        return
+    user_pending_photo[chat_id] = user_last_image[chat_id]
+    user_edit_model[chat_id] = user_last_edit_model.get(chat_id, "flux")
+    user_face_mode[chat_id] = user_last_face_mode.get(chat_id, "full_edit")
+    user_state[chat_id] = "awaiting_prompt"
+    bot.send_message(chat_id, "✏️ Введите новый промпт для доработки этого фото:", reply_markup=back_keyboard())
+    bot.answer_callback_query(call.id, "Готово к редактированию")
 
 @bot.message_handler(content_types=["photo"], func=lambda m: user_state.get(m.chat.id) == "awaiting_video_image_first")
 def handle_video_first_frame(message):
@@ -982,8 +1046,14 @@ def handle_generate_prompt(message):
     user_last_activity[chat_id] = time.time()
     prompt = message.text
     model = user_generate_model.pop(chat_id, "flux")
+    aspect = user_generate_aspect.pop(chat_id, "16:9")
     user_state[chat_id] = None
     cost = CREDIT_COSTS["image_pro"]
+    
+    # Добавляем формат к промпту
+    aspect_hint = ASPECT_PROMPTS.get(aspect, "")
+    full_prompt = f"{prompt}. {aspect_hint}" if aspect_hint else prompt
+    
     with data_lock:
         if chat_id != ADMIN_ID:
             if user_credits.get(chat_id, 0) < cost:
@@ -991,25 +1061,24 @@ def handle_generate_prompt(message):
                 send_main_menu(chat_id)
                 return
             user_credits[chat_id] -= cost
-            user_credit_history[chat_id].append((time.time(), -cost, f"Генерация {model}"))
+            user_credit_history[chat_id].append((time.time(), -cost, f"Генерация {model} {aspect}"))
             save_data()
             bot.send_message(chat_id, f"✅ Списано {cost} 🔷. Осталось: {user_credits[chat_id]}")
-    bot.send_message(chat_id, f"🎨 Генерирую через {model}...")
+    bot.send_message(chat_id, f"🎨 Генерирую через {model} ({aspect})...")
     if model == "flux":
-        img_data = generate_image_flux(prompt)
+        img_data = generate_image_flux(full_prompt)
     else:
-        img_data = generate_image_seedream(prompt)
+        img_data = generate_image_seedream(full_prompt)
     if img_data:
+        output, err = _prepare_image_bytes(img_data)
+        if err:
+            logging.error(f"Image prepare error: {err}")
+            output = img_data
         try:
-            img = Image.open(io.BytesIO(img_data))
-            img.thumbnail((800, 800), _safe_resample())
-            img = img.convert("RGB")
-            buf = io.BytesIO()
-            img.save(buf, format="JPEG", quality=85)
-            bot.send_photo(chat_id, buf.getvalue(), caption="✅ Готово!")
+            bot.send_photo(chat_id, output, caption=f"✅ Готово! ({aspect})")
         except Exception as e:
             logging.error(f"Image send error: {e}")
-            bot.send_document(chat_id, img_data, caption="✅ Готово (файл)")
+            bot.send_document(chat_id, img_data, caption=f"✅ Готово (файл) ({aspect})")
     else:
         with data_lock:
             if chat_id != ADMIN_ID:
@@ -1066,16 +1135,25 @@ def handle_awaiting_prompt(message):
         caption = f"✅ Отредактировано ({model})"
         if face_mode == "keep_face":
             caption += " с сохранением лица"
+        
+        # Сохраняем оригинал для цепочки редактирования
+        user_last_image[chat_id] = base64.b64encode(img_data).decode('utf-8')
+        user_last_edit_model[chat_id] = model
+        user_last_face_mode[chat_id] = face_mode
+        
+        output, err = _prepare_image_bytes(img_data)
+        if err:
+            logging.error(f"Edit prepare error: {err}")
+            output = img_data
+        
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("🔄 Продолжить редактирование", callback_data="edit_again"))
+        
         try:
-            img = Image.open(io.BytesIO(img_data))
-            img.thumbnail((800, 800), _safe_resample())
-            img = img.convert("RGB")
-            buf = io.BytesIO()
-            img.save(buf, format="JPEG", quality=85)
-            bot.send_photo(chat_id, buf.getvalue(), caption=caption)
+            bot.send_photo(chat_id, output, caption=caption, reply_markup=markup)
         except Exception as e:
             logging.error(f"Edit image send error: {e}")
-            bot.send_document(chat_id, img_data, caption=caption)
+            bot.send_document(chat_id, img_data, caption=caption, reply_markup=markup)
     elif error_msg:
         with data_lock:
             if chat_id != ADMIN_ID:
@@ -1125,6 +1203,7 @@ def handle_text_chat(message):
         "awaiting_prompt", "awaiting_generate_prompt", "awaiting_photo",
         "awaiting_video_prompt", "awaiting_video_image_first",
         "awaiting_video_image_last", "awaiting_video_last_choice",
+        "selecting_aspect",
     ]:
         return
     if chat_id == ADMIN_ID:
