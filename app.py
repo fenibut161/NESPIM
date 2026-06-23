@@ -961,7 +961,8 @@ def set_aspect(call):
     bot.answer_callback_query(call.id, f"Формат {aspect}")
 
 # --- EDITING: model → aspect → face → photo ---
-@bot.callback_query_handler(func=lambda call: call.data.startswith("edit_"))
+# ИСПРАВЛЕНО: фильтр теперь точный, чтобы не перехватывать edit_aspect_*, edit_again и т.д.
+@bot.callback_query_handler(func=lambda call: call.data in ("edit_flux", "edit_seedream"))
 def select_edit_model(call):
     chat_id = call.message.chat.id
     data = call.data
@@ -1249,6 +1250,8 @@ def handle_video_prompt(message):
     Thread(target=generate_video_async, args=(chat_id, prompt, first_frame, last_frame), daemon=True).start()
 
 # ================== CHAT ==================
+# ИСПРАВЛЕНО: добавлены select_model_edit и select_model_generate в список состояний,
+# чтобы случайный текст не уходил в DeepSeek на этапе выбора модели/аспекта
 @bot.message_handler(func=lambda m: True, content_types=["text"])
 def handle_text_chat(message):
     if message.text.startswith("/"):
@@ -1266,7 +1269,7 @@ def handle_text_chat(message):
         "awaiting_prompt", "awaiting_generate_prompt", "awaiting_photo",
         "awaiting_video_prompt", "awaiting_video_image_first",
         "awaiting_video_image_last", "awaiting_video_last_choice",
-        "selecting_aspect",
+        "selecting_aspect", "select_model_edit", "select_model_generate",
     ]:
         return
     if chat_id == ADMIN_ID:
