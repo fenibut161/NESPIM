@@ -7,12 +7,15 @@ import base64
 import urllib3
 import json
 import logging
-from html import escape
+import re
+from html import escape, unescape
 from flask import Flask, request, send_from_directory
 from threading import Thread, RLock
-from telebot.types import (ReplyKeyboardMarkup, KeyboardButton,
-                           InlineKeyboardMarkup, InlineKeyboardButton,
-                           LabeledPrice)
+from telebot.types import (
+    ReplyKeyboardMarkup, KeyboardButton,
+    InlineKeyboardMarkup, InlineKeyboardButton,
+    LabeledPrice
+)
 from PIL import Image
 import io
 from collections import defaultdict
@@ -45,6 +48,7 @@ user_credits = defaultdict(int)
 user_credit_history = defaultdict(list)
 user_message_count = defaultdict(int)
 user_last_activity = defaultdict(float)
+user_chat_history = defaultdict(list)  # <--- ДОБАВЛЕНО: память диалогов агента
 
 user_state = {}
 user_edit_model = {}
@@ -80,7 +84,7 @@ ASPECT_PROMPTS = {
 
 # --- GIST SYNC ---
 def load_data():
-    global user_credits, user_credit_history, user_message_count, user_last_activity
+    global user_credits, user_credit_history, user_message_count, user_last_activity, user_chat_history
     data = None
     source = "fresh"
 
@@ -113,8 +117,8 @@ def load_data():
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as fh:
                 data = json.load(fh)
-            source = "local file"
-            logging.info(f"[LOAD] Local file OK: {len(data.get('credits', {}))} users")
+                source = "local file"
+                logging.info(f"[LOAD] Local file OK: {len(data.get('credits', {}))} users")
         except FileNotFoundError:
             logging.info("[LOAD] No local file, starting fresh")
             data = {}
@@ -126,6 +130,7 @@ def load_data():
     user_credit_history = defaultdict(list, {int(k): v for k, v in data.get("history", {}).items()})
     user_message_count = defaultdict(int, {int(k): v for k, v in data.get("messages", {}).items()})
     user_last_activity = defaultdict(float, {int(k): v for k, v in data.get("last_activity", {}).items()})
+    user_chat_history = defaultdict(list, {int(k): v for k, v in data.get("chat_history", {}).items()})
     logging.info(f"[LOAD] Final state from {source}: {sum(user_credits.values())} total credits")
 
 def save_data():
@@ -135,11 +140,12 @@ def save_data():
             "history": dict(user_credit_history),
             "messages": dict(user_message_count),
             "last_activity": dict(user_last_activity),
+            "chat_history": dict(user_chat_history),
         }
         try:
             with open(DATA_FILE, "w", encoding="utf-8") as fh:
                 json.dump(data, fh, ensure_ascii=False, indent=2)
-            logging.info("[SAVE] Local file OK")
+                logging.info("[SAVE] Local file OK")
         except Exception as e:
             logging.error(f"[SAVE] Local file error: {e}")
 
@@ -160,8 +166,8 @@ def save_data():
                 logging.error(f"[SAVE] Gist exception: {e}")
         else:
             logging.warning(f"[SAVE] Skipped Gist: GIST_ID={'set' if GIST_ID else 'missing'}, GITHUB_TOKEN={'set' if GITHUB_TOKEN else 'missing'}")
-        
-        sys.stdout.flush()
+
+    sys.stdout.flush()
 
 load_data()
 
@@ -190,9 +196,106 @@ CREDIT_COSTS = {
     "deepseek_session": 1,
 }
 
-# ================== DEEPSEEK ==================
+def _build_headers():
+    return {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://t.me/Jastick_bot",
+        "X-Title": "TelegramBot",
+    }
+
+# ================== AGENT TOOLS HELPERS ==================
+def helper_web_search(query):
+    try:
+        url = "https://html.duckduckgo.com/html/"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        r = requests.post(url, data={"q": query}, headers=headers, timeout=10)
+        text = unescape(r.text)
+        snippets = re.findall(r'<a class="result__snippet[^>]*>(.*?)</a>', text, re.DOTALL)
+        clean = [re.sub(r'<.*?>', '', s).strip() for s in snippets[:4]]
+        return clean if clean else ["По запросу ничего не найдено в поисковике."]
+    except Exception as e:
+        return [f"Ошибка веб-поиска: {e}"]
+
+def helper_fetch_webpage(url):
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        r = requests.get(url, headers=headers, timeout=15)
+        text = unescape(r.text)
+        text = re.sub(r'<style.*?>.*?</style>', '', text, flags=re.DOTALL)
+        text = re.sub(r'<script.*?>.*?</script>', '', text, flags=re.DOTALL)
+        text = re.sub(r'<.*?>', ' ', text)
+        text = re.sub(r'\s+', ' ', text).strip()
+        return text[:2500] if text else "Веб-страница пустая."
+    except Exception as e:
+        return f"Не удалось прочитать ссылку: {e}"
+
+AGENT_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Поиск актуальных новостей, фактов, документации или информации в интернете Google/DuckDuckGo",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Поисковый запрос"}
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_webpage",
+            "description": "Прочесть текстовое содержимое веб-страницы по ссылке (URL)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "Прямая ссылка http/https"}
+                },
+                "required": ["url"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_image",
+            "description": "Нарисовать и отправить юзеру картинку через нейросеть Flux Pro. Списывает 2 токена 🔷.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "Промпт для генерации картинки на английском или русском"},
+                    "aspect_ratio": {"type": "string", "enum": ["16:9", "9:16", "1:1", "4:3"], "description": "Формат кадра"}
+                },
+                "required": ["prompt", "aspect_ratio"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_my_balance",
+            "description": "Проверить текущий баланс токенов 🔷 пользователя и остаток сообщений в пакете чата",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "clear_memory",
+            "description": "Очистить память диалога с пользователем (когда просят забыть контекст)",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    }
+]
+
+# ================== DEEPSEEK AGENT CORE ==================
 def ask_deepseek(prompt):
-    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"}
+    # Оставлено для обратной совместимости системных вызовов
+    headers = _build_headers()
     payload = {"model": "deepseek/deepseek-v4-pro", "messages": [{"role": "user", "content": prompt}]}
     try:
         r = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=90)
@@ -202,6 +305,120 @@ def ask_deepseek(prompt):
     except Exception as e:
         logging.error(f"DeepSeek exception: {e}")
     return "⚠️ Ошибка соединения"
+
+def run_agent(chat_id, user_text):
+    history = list(user_chat_history.get(chat_id, []))
+    if len(history) > 20:
+        history = history[-18:]
+
+    system_prompt = (
+        "Ты — персональный ИИ-агент и помощник в Telegram. Ты умный, вежливый, инициативный.\n"
+        "Твои возможности (инструменты):\n"
+        "1. web_search — гуглить в интернете факты, новости, документацию.\n"
+        "2. fetch_webpage — читать ссылки, присланные пользователем.\n"
+        "3. generate_image — генерировать арты/картинки (нейросеть Flux Pro, стоит 2 🔷).\n"
+        "4. get_my_balance — проверять баланс токенов 🔷 пользователя.\n"
+        "5. clear_memory — очищать историю текущей беседы.\n\n"
+        "ВАЖНЫЕ ПРАВИЛА:\n"
+        "- Если юзер просит нарисовать картинку/арт/логотип — НЕ описывай её словами, а СРАЗУ вызывай функцию generate_image!\n"
+        "- Если юзер кидает ссылку — прочти её через fetch_webpage перед ответом.\n"
+        "- Если юзер спрашивает о событиях после 2024 года — используй web_search.\n"
+        "- Отвечай понятно, емко, на языке собеседника (обычно русский)."
+    )
+
+    messages = [{"role": "system", "content": system_prompt}] + history + [{"role": "user", "content": user_text}]
+    headers = _build_headers()
+
+    for turn in range(5):
+        payload = {
+            "model": "deepseek/deepseek-v4-pro",
+            "messages": messages,
+            "tools": AGENT_TOOLS
+        }
+        try:
+            r = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=90)
+            if r.status_code != 200:
+                logging.error(f"[AGENT ERROR] {r.status_code}: {r.text[:300]}")
+                return "⚠️ Ошибка связи с нейросетью."
+
+            data = r.json()
+            msg = data["choices"][0]["message"]
+
+            if "tool_calls" in msg and msg["tool_calls"]:
+                messages.append(msg)
+                for tc in msg["tool_calls"]:
+                    fn_name = tc["function"]["name"]
+                    fn_args = tc["function"]["arguments"]
+                    call_id = tc["id"]
+
+                    try:
+                        args = json.loads(fn_args)
+                    except Exception:
+                        args = {}
+
+                    logging.info(f"[AGENT TOOL] chat_id={chat_id} -> {fn_name}({args})")
+                    res_content = ""
+
+                    if fn_name == "web_search":
+                        res_content = "\n".join(helper_web_search(args.get("query", "")))
+                    elif fn_name == "fetch_webpage":
+                        res_content = helper_fetch_webpage(args.get("url", ""))
+                    elif fn_name == "get_my_balance":
+                        bal = user_credits.get(chat_id, 0)
+                        rem_msgs = 50 - user_message_count.get(chat_id, 0)
+                        res_content = f"Баланс: {bal} 🔷. Осталось сообщений в пакете чата: {rem_msgs}/50."
+                    elif fn_name == "clear_memory":
+                        user_chat_history[chat_id] = []
+                        save_data()
+                        res_content = "Память диалога успешно очищена."
+                    elif fn_name == "generate_image":
+                        p = args.get("prompt", "")
+                        asp = args.get("aspect_ratio", "16:9")
+                        cost = CREDIT_COSTS["image_pro"]
+                        can_gen = False
+
+                        with data_lock:
+                            if chat_id == ADMIN_ID or user_credits.get(chat_id, 0) >= cost:
+                                if chat_id != ADMIN_ID:
+                                    user_credits[chat_id] -= cost
+                                    user_credit_history[chat_id].append((time.time(), -cost, f"Агент: арт {asp}"))
+                                    save_data()
+                                can_gen = True
+
+                        if not can_gen:
+                            res_content = f"У юзера недостаточно токенов (нужно {cost} 🔷, баланс {user_credits.get(chat_id, 0)})."
+                        else:
+                            bot.send_message(chat_id, f"🎨 Агент генерирует изображение ({asp})...")
+                            full_p = f"{p}. {ASPECT_PROMPTS.get(asp, '')}" if asp in ASPECT_PROMPTS else p
+                            img_bytes = generate_image_flux(full_p)
+                            if img_bytes:
+                                out_b, _ = _prepare_image_bytes(img_bytes)
+                                bot.send_photo(chat_id, out_b or img_bytes, caption="🎨 Создано ИИ-агентом")
+                                res_content = "Картинка успешно создана и отправлена в чат юзеру."
+                            else:
+                                if chat_id != ADMIN_ID:
+                                    with data_lock:
+                                        user_credits[chat_id] += cost
+                                        save_data()
+                                res_content = "Ошибка генерации картинки (токены возвращены юзеру)."
+
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "name": fn_name,
+                        "content": str(res_content)
+                    })
+            else:
+                final_text = msg.get("content", "")
+                history.append({"role": "user", "content": user_text})
+                history.append({"role": "assistant", "content": final_text})
+                user_chat_history[chat_id] = history[-20:]
+                return final_text
+        except Exception as e:
+            logging.error(f"[AGENT EXCEPTION] {e}")
+            return "⚠️ Произошла ошибка при работе ИИ-агента."
+
+    return "⚠️ Агент превысил лимит шагов рассуждения."
 
 # ================== IMAGE HELPERS ==================
 def _safe_resample():
@@ -228,14 +445,6 @@ def _parse_image_response(resp):
     except Exception as e:
         return None, str(e)
 
-def _build_headers():
-    return {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://t.me/Jastick_bot",
-        "X-Title": "TelegramBot",
-    }
-
 def _prepare_image_bytes(img_data, quality=95, max_size_mb=5):
     try:
         img = Image.open(io.BytesIO(img_data))
@@ -260,7 +469,7 @@ def generate_image_flux(prompt):
         return _parse_image_response(resp)[0]
     except Exception as e:
         logging.error(f"Flux generation error: {e}")
-    return None
+        return None
 
 def edit_image_flux(prompt, image_base64):
     payload = {
@@ -281,7 +490,7 @@ def edit_image_flux(prompt, image_base64):
         return _parse_image_response(resp)
     except Exception as e:
         logging.error(f"Flux edit error: {e}")
-    return None, str(e)
+        return None, str(e)
 
 # ================== SEEDREAM ==================
 def generate_image_seedream(prompt):
@@ -291,7 +500,7 @@ def generate_image_seedream(prompt):
         return _parse_image_response(resp)[0]
     except Exception as e:
         logging.error(f"Seedream generation error: {e}")
-    return None
+        return None
 
 def edit_image_seedream(prompt, image_base64):
     payload = {
@@ -312,7 +521,7 @@ def edit_image_seedream(prompt, image_base64):
         return _parse_image_response(resp)
     except Exception as e:
         logging.error(f"Seedream edit error: {e}")
-    return None, str(e)
+        return None, str(e)
 
 # ================== VIDEO ==================
 def compress_image_if_needed(b64_str, max_size=(640, 640), quality=80):
@@ -404,7 +613,7 @@ def generate_video_async(chat_id, prompt, first_frame_b64=None, last_frame_b64=N
             user_credits[chat_id] -= cost
             user_credit_history[chat_id].append((time.time(), -cost, f"Видео {duration}с"))
             save_data()
-            bot.send_message(chat_id, f"✅ Списано {cost} 🔷. Осталось: {user_credits[chat_id]}")
+        bot.send_message(chat_id, f"✅ Списано {cost} 🔷. Осталось: {user_credits[chat_id]}")
     params = user_video_params.get(chat_id, {})
     resolution = params.get("resolution", "480p")
     audio = params.get("audio", True)
@@ -416,12 +625,7 @@ def generate_video_async(chat_id, prompt, first_frame_b64=None, last_frame_b64=N
         "kwaivgi/kling-v3-pro": "Kling Pro",
     }
     model_display = model_names.get(model_id, model_id)
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://t.me/Jastick_bot",
-        "X-Title": "TelegramBot",
-    }
+    headers = _build_headers()
     payload = {"model": model_id, "prompt": prompt, "duration": duration, "aspect_ratio": aspect}
     features = VIDEO_MODEL_FEATURES.get(model_id, {})
     if features.get("resolution"):
@@ -475,7 +679,7 @@ def generate_video_async(chat_id, prompt, first_frame_b64=None, last_frame_b64=N
                 user_credit_history[chat_id].append((time.time(), cost, "Возврат за видео (ошибка)"))
                 save_data()
         bot.send_message(chat_id, "❌ Ошибка связи. 🔷 возвращены.")
-    return False
+        return False
 
 # ================== KEYBOARDS ==================
 def main_menu_keyboard():
@@ -542,14 +746,14 @@ def profile(message):
     user_last_activity[chat_id] = time.time()
     credits = user_credits.get(chat_id, 0)
     history = user_credit_history.get(chat_id, [])
-    text = f"👤 <b>Ваш профиль</b>\n\n💰 Баланс: {credits} 🔷\n\n"
+    text = f"👤 **Ваш профиль**\n\n💰 Баланс: {credits} 🔷\n\n"
     if history:
-        text += "📋 <b>Последние операции:</b>\n"
+        text += "📋 **Последние операции:**\n"
         for ts, delta, reason in history[-5:]:
             sign = "+" if delta > 0 else ""
             text += f"{sign}{delta} 🔷 – {escape(reason)}\n"
     else:
-        text += "📋 <b>Операций пока нет.</b>"
+        text += "📋 **Операций пока нет.**"
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("💳 Пополнить баланс", callback_data="goto_shop"))
     bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
@@ -565,16 +769,16 @@ def shop(message):
     chat_id = message.chat.id
     user_last_activity[chat_id] = time.time()
     text = (
-        "🛒 <b>Магазин токенов 🔷</b>\n"
+        "🛒 **Магазин токенов 🔷**\n"
         " 🔷 за токены приобретается:\n"
         "• Генерация (Flux/Seedream) — 2 🔷\n"
         "• Редактирование фото (Flux/Seedream) — 3 🔷\n"
         "• Видео 5 сек — 25 🔷, 10 сек — 50 🔷, 15 сек — 100 🔷\n"
-        "• Чат с ИИ — 1 🔷 за 50 сообщений\n\n"
+        "• Чат с ИИ-агентом — 1 🔷 за 50 сообщений\n\n"
         "Выберите пакет:"
     )
     for key, pkg in PACKAGES.items():
-        text += f"\n<b>{escape(pkg['name'])}</b>: {pkg['credits']} 🔷 — {pkg['price_stars']} ⭐️ / {pkg['price_rub']} ₽"
+        text += f"\n **{escape(pkg['name'])}**: {pkg['credits']} 🔷 — {pkg['price_stars']} ⭐️ / {pkg['price_rub']} ₽"
     bot.send_message(chat_id, text, parse_mode="HTML")
     markup = InlineKeyboardMarkup(row_width=2)
     for key, pkg in PACKAGES.items():
@@ -638,13 +842,13 @@ def handle_card_payment(call):
     username = f"@{user.username}" if user.username else "без username"
     bot.send_message(
         chat_id,
-        f"💳 <b>Оплата картой — пакет «{pkg['name']}»</b>\n\n"
-        f"Сумма: <b>{pkg['price_rub']} ₽</b>\n"
-        f"Вы получите: <b>{pkg['credits']} 🔷</b>\n\n"
+        f"💳 **Оплата картой — пакет «{pkg['name']}»**\n\n"
+        f"Сумма: **{pkg['price_rub']} ₽**\n"
+        f"Вы получите: **{pkg['credits']} 🔷**\n\n"
         f"Переведите сумму на Т-Банк / СБЕР по номеру:\n"
-        f"<code>+79192329005</code>\n\n"
-        f"❗️ <b>Укажите в комментарии к переводу ваш Telegram ID:</b>\n"
-        f"<code>{chat_id}</code>\n\n"
+        f"`+79192329005`\n\n"
+        f"❗️ **Укажите в комментарии к переводу ваш Telegram ID:**\n"
+        f"`{chat_id}`\n\n"
         f"После перевода 🔷 начислятся вручную в течение 15 минут.",
         parse_mode="HTML",
     )
@@ -654,10 +858,10 @@ def handle_card_payment(call):
         markup.add(InlineKeyboardButton(f"✅ Начислить {pkg['credits']}🔷", callback_data=f"admin_grant_{chat_id}_{pkg_key}"))
         bot.send_message(
             ADMIN_ID,
-            f"💳 <b>Запрос на оплату картой</b>\n\n"
+            f"💳 **Запрос на оплату картой**\n\n"
             f"Пользователь: {username}\n"
-            f"ID: <code>{chat_id}</code>\n"
-            f"Пакет: <b>{pkg['name']}</b>\n"
+            f"ID: `{chat_id}`\n"
+            f"Пакет: **{pkg['name']}**\n"
             f"Сумма: {pkg['price_rub']} ₽\n"
             f"🔷: {pkg['credits']}",
             parse_mode="HTML",
@@ -687,7 +891,7 @@ def admin_grant_credits(call):
         save_data()
     bot.answer_callback_query(call.id, f"Начислено {pkg['credits']} 🔷")
     bot.edit_message_text(
-        f"✅ <b>Начислено</b>\nПользователю {target_id}: +{pkg['credits']} 🔷",
+        f"✅ **Начислено**\nПользователю {target_id}: +{pkg['credits']} 🔷",
         call.message.chat.id,
         call.message.message_id,
     )
@@ -707,8 +911,8 @@ def admin_panel(message):
         return
     with data_lock:
         total_credits = sum(user_credits.values())
-    text = f"👑 Админ-панель\nПользователей: {len(user_credits)}\n🔷 всего: {total_credits}\n\nКоманды:\n/addcredits <id> <amount>\n/removecredits <id> <amount>"
-    bot.send_message(message.chat.id, text)
+        text = f"👑 Админ-панель\nПользователей: {len(user_credits)}\n🔷 всего: {total_credits}\n\nКоманды:\n/addcredits <uid> <amount>\n/removecredits <uid> <amount>"
+        bot.send_message(message.chat.id, text)
 
 @bot.message_handler(commands=["addcredits"])
 def add_credits(message):
@@ -721,24 +925,24 @@ def add_credits(message):
             user_credits[uid] = user_credits.get(uid, 0) + amt
             user_credit_history[uid].append((time.time(), amt, "Начисление админом"))
             save_data()
-        
+
         current_balance = user_credits[uid]
         history_count = len(user_credit_history[uid])
         confirm_text = (
-            f"✅ <b>Начисление выполнено</b>\n\n"
-            f"👤 Пользователь: <code>{uid}</code>\n"
+            f"✅ **Начисление выполнено**\n\n"
+            f"👤 Пользователь: `{uid}`\n"
             f"➕ Начислено: {amt} 🔷\n"
             f"💰 Текущий баланс: {current_balance} 🔷\n"
             f"📋 Всего операций: {history_count}"
         )
         bot.send_message(message.chat.id, confirm_text, parse_mode="HTML")
-        
+
         try:
             bot.send_message(uid, f"🎉 Администратор начислил вам {amt} 🔷.\nВаш баланс: {current_balance} 🔷")
         except Exception as e:
             logging.error(f"Не удалось уведомить {uid}: {e}")
     except Exception:
-        bot.send_message(message.chat.id, "Формат: /addcredits <user_id> <amount>")
+        bot.send_message(message.chat.id, "Формат: /addcredits <uid> <amount>")
 
 @bot.message_handler(commands=["removecredits"])
 def remove_credits(message):
@@ -761,7 +965,7 @@ def remove_credits(message):
                 bot.send_message(message.chat.id, "Недостаточно 🔷")
     except Exception as e:
         logging.error(f"Remove credits error: {e}")
-        bot.send_message(message.chat.id, "Формат: /removecredits <user_id> <amount>")
+        bot.send_message(message.chat.id, "Формат: /removecredits <uid> <amount>")
 
 # ================== START & MENU ==================
 @bot.message_handler(commands=["start"])
@@ -769,7 +973,7 @@ def start(message):
     chat_id = message.chat.id
     user_last_activity[chat_id] = time.time()
     user_state[chat_id] = None
-    send_main_menu(chat_id, "👋 Привет! Я умею генерировать изображения (Flux/Seedream), редактировать фото и создавать видео. Выбери действие в меню ниже.")
+    send_main_menu(chat_id, "👋 Привет! Я умею генерировать изображения (Flux/Seedream), редактировать фото, создавать видео, а в режиме «Чат» работаю как полноценный ИИ-агент с доступом в интернет. Выбери действие ниже.")
 
 def send_main_menu(chat_id, text="Главное меню:"):
     bot.send_message(chat_id, text, reply_markup=main_menu_keyboard())
@@ -815,7 +1019,7 @@ def menu_chat(message):
     chat_id = message.chat.id
     user_last_activity[chat_id] = time.time()
     user_state[chat_id] = None
-    bot.send_message(message.chat.id, "Задай любой вопрос (DeepSeek V4 Pro). Каждые 50 сообщений списывается 1 🔷.", reply_markup=back_keyboard())
+    bot.send_message(message.chat.id, "🤖 Режим ИИ-агента активирован!\nЯ запоминаю контекст диалога, умею сам гуглить свежую информацию, переходить по ссылкам и рисовать арты (просто попроси «нарисуй...»). Каждые 50 сообщений списывается 1 🔷.", reply_markup=back_keyboard())
 
 @bot.message_handler(func=lambda m: m.text == "👤 Профиль")
 def menu_profile(message):
@@ -927,7 +1131,7 @@ def select_video_mode(call):
         user_state[chat_id] = "awaiting_video_image_first"
         bot.delete_message(chat_id, call.message.message_id)
         bot.send_message(chat_id, "📸 Загрузи ПЕРВЫЙ кадр (начальное изображение):", reply_markup=back_keyboard())
-    bot.answer_callback_query(call.id)
+        bot.answer_callback_query(call.id)
 
 # --- GENERATION: model → aspect → prompt ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith("gen_"))
@@ -961,7 +1165,6 @@ def set_aspect(call):
     bot.answer_callback_query(call.id, f"Формат {aspect}")
 
 # --- EDITING: model → aspect → face → photo ---
-# ИСПРАВЛЕНО: фильтр теперь точный, чтобы не перехватывать edit_aspect_*, edit_again и т.д.
 @bot.callback_query_handler(func=lambda call: call.data in ("edit_flux", "edit_seedream"))
 def select_edit_model(call):
     chat_id = call.message.chat.id
@@ -1015,25 +1218,24 @@ def edit_again(call):
     if chat_id not in user_last_image:
         bot.answer_callback_query(call.id, "Нет сохранённого фото")
         return
-    
-    # Восстанавливаем всё состояние цепочки
+
     user_pending_photo[chat_id] = user_last_image[chat_id]
     user_edit_model[chat_id] = user_last_edit_model.get(chat_id, "flux")
     user_face_mode[chat_id] = user_last_face_mode.get(chat_id, "full_edit")
     user_edit_aspect[chat_id] = user_last_edit_aspect.get(chat_id, "16:9")
     user_state[chat_id] = "awaiting_prompt"
-    
+
     logging.info(f"[EDIT AGAIN] chat_id={chat_id}, model={user_edit_model[chat_id]}, "
                  f"face={user_face_mode[chat_id]}, aspect={user_edit_aspect[chat_id]}")
-    
+
     bot.send_message(chat_id, "✏️ Введите новый промпт для доработки этого фото:", reply_markup=back_keyboard())
     bot.answer_callback_query(call.id, "Готово к редактированию")
 
 @bot.callback_query_handler(func=lambda call: call.data == "goto_main")
 def goto_main_handler(call):
     chat_id = call.message.chat.id
-    for d in [user_state, user_edit_model, user_face_mode, user_generate_model, 
-              user_generate_aspect, user_pending_photo, user_last_image, 
+    for d in [user_state, user_edit_model, user_face_mode, user_generate_model,
+              user_generate_aspect, user_pending_photo, user_last_image,
               user_last_edit_model, user_last_face_mode, user_last_edit_aspect,
               user_edit_aspect, user_video_frames, user_video_params,
               user_video_model, user_video_mode]:
@@ -1091,10 +1293,10 @@ def handle_generate_prompt(message):
     aspect = user_generate_aspect.pop(chat_id, "16:9")
     user_state[chat_id] = None
     cost = CREDIT_COSTS["image_pro"]
-    
+
     aspect_hint = ASPECT_PROMPTS.get(aspect, "")
     full_prompt = f"{prompt}. {aspect_hint}" if aspect_hint else prompt
-    
+
     with data_lock:
         if chat_id != ADMIN_ID:
             if user_credits.get(chat_id, 0) < cost:
@@ -1104,7 +1306,7 @@ def handle_generate_prompt(message):
             user_credits[chat_id] -= cost
             user_credit_history[chat_id].append((time.time(), -cost, f"Генерация {model} {aspect}"))
             save_data()
-            bot.send_message(chat_id, f"✅ Списано {cost} 🔷. Осталось: {user_credits[chat_id]}")
+        bot.send_message(chat_id, f"✅ Списано {cost} 🔷. Осталось: {user_credits[chat_id]}")
     bot.send_message(chat_id, f"🎨 Генерирую через {model} ({aspect})...")
     if model == "flux":
         img_data = generate_image_flux(full_prompt)
@@ -1126,7 +1328,7 @@ def handle_generate_prompt(message):
                 user_credits[chat_id] += cost
                 user_credit_history[chat_id].append((time.time(), cost, f"Возврат за генерацию {model}"))
                 save_data()
-                bot.send_message(chat_id, f"❌ Ошибка генерации. {cost} 🔷 возвращены.")
+        bot.send_message(chat_id, f"❌ Ошибка генерации. {cost} 🔷 возвращены.")
         bot.send_message(chat_id, "❌ Не удалось сгенерировать изображение.")
     send_main_menu(chat_id)
 
@@ -1151,21 +1353,20 @@ def handle_awaiting_prompt(message):
         bot.send_message(chat_id, "⚠️ Сначала загрузи фото.")
         send_main_menu(chat_id)
         return
-    
+
     model = user_edit_model.pop(chat_id, "flux")
     face_mode = user_face_mode.pop(chat_id, "full_edit")
     aspect = user_edit_aspect.pop(chat_id, None)
     user_state[chat_id] = None
-    
-    # Формат добавляем только если это НЕ цепочка (чтобы не дублировать)
+
     if aspect and aspect in ASPECT_PROMPTS:
         if not prompt.lower().startswith(ASPECT_PROMPTS[aspect].lower()[:10]):
             prompt = f"{ASPECT_PROMPTS[aspect]}. {prompt}"
         user_last_edit_aspect[chat_id] = aspect
-    
+
     if face_mode == "keep_face":
         prompt = "Keep the face and facial features completely unchanged. Do not modify the face. Only apply the following changes: " + prompt
-    
+
     cost = CREDIT_COSTS["edit_pro"]
     with data_lock:
         if chat_id != ADMIN_ID:
@@ -1176,54 +1377,52 @@ def handle_awaiting_prompt(message):
             user_credits[chat_id] -= cost
             user_credit_history[chat_id].append((time.time(), -cost, f"Редактирование {model}"))
             save_data()
-            bot.send_message(chat_id, f"✅ Списано {cost} 🔷. Осталось: {user_credits[chat_id]}")
-    
+        bot.send_message(chat_id, f"✅ Списано {cost} 🔷. Осталось: {user_credits[chat_id]}")
+
     logging.info(f"[EDIT] chat_id={chat_id}, model={model}, face={face_mode}, aspect={aspect}")
     bot.send_message(chat_id, f"🎨 Редактирую через {model}...")
-    
+
     if model == "flux":
         img_data, error_msg = edit_image_flux(prompt, photo_base64)
     else:
         img_data, error_msg = edit_image_seedream(prompt, photo_base64)
-    
+
     if img_data:
         caption = f"✅ Отредактировано ({model})"
         if face_mode == "keep_face":
             caption += " с сохранением лица"
-        
-        # Сохраняем оригинал для цепочки редактирования — ДО отправки, в любом случае
+
         user_last_image[chat_id] = base64.b64encode(img_data).decode('utf-8')
         user_last_edit_model[chat_id] = model
         user_last_face_mode[chat_id] = face_mode
         if aspect:
             user_last_edit_aspect[chat_id] = aspect
-        
+
         output, err = _prepare_image_bytes(img_data)
         if err:
             logging.error(f"Edit prepare error: {err}")
             output = img_data
-        
+
         markup = InlineKeyboardMarkup(row_width=2)
         markup.add(
             InlineKeyboardButton("🔄 Продолжить редактирование", callback_data="edit_again"),
             InlineKeyboardButton("🔙 Главное меню", callback_data="goto_main"),
         )
-        
+
         try:
             bot.send_photo(chat_id, output, caption=caption, reply_markup=markup)
         except Exception as e:
             logging.error(f"Edit image send error: {e}")
-            # Отправляем как документ, но кнопки обязательно сохраняем
             bot.send_document(chat_id, io.BytesIO(img_data), caption=caption, reply_markup=markup)
-        return  # НЕ отправляем главное меню отдельным сообщением
-    
+        return
+
     elif error_msg:
         with data_lock:
             if chat_id != ADMIN_ID:
                 user_credits[chat_id] += cost
                 user_credit_history[chat_id].append((time.time(), cost, f"Возврат за редактирование {model}"))
                 save_data()
-                bot.send_message(chat_id, f"❌ Ошибка редактирования. {cost} 🔷 возвращены.")
+        bot.send_message(chat_id, f"❌ Ошибка редактирования. {cost} 🔷 возвращены.")
         bot.send_message(chat_id, f"❌ Не удалось отредактировать изображение.\n{error_msg}")
         send_main_menu(chat_id)
     else:
@@ -1232,7 +1431,7 @@ def handle_awaiting_prompt(message):
                 user_credits[chat_id] += cost
                 user_credit_history[chat_id].append((time.time(), cost, "Возврат за редактирование (пустой ответ)"))
                 save_data()
-                bot.send_message(chat_id, "❌ Не удалось отредактировать изображение. 🔷 возвращены.")
+        bot.send_message(chat_id, "❌ Не удалось отредактировать изображение. 🔷 возвращены.")
         send_main_menu(chat_id)
 
 # ================== VIDEO PROMPT ==================
@@ -1249,9 +1448,7 @@ def handle_video_prompt(message):
     user_video_frames.pop(chat_id, None)
     Thread(target=generate_video_async, args=(chat_id, prompt, first_frame, last_frame), daemon=True).start()
 
-# ================== CHAT ==================
-# ИСПРАВЛЕНО: добавлены select_model_edit и select_model_generate в список состояний,
-# чтобы случайный текст не уходил в DeepSeek на этапе выбора модели/аспекта
+# ================== CHAT (AGENT MODE) ==================
 @bot.message_handler(func=lambda m: True, content_types=["text"])
 def handle_text_chat(message):
     if message.text.startswith("/"):
@@ -1272,12 +1469,14 @@ def handle_text_chat(message):
         "selecting_aspect", "select_model_edit", "select_model_generate",
     ]:
         return
+
     if chat_id == ADMIN_ID:
-        reply = ask_deepseek(message.text)
+        reply = run_agent(chat_id, message.text)
         bot.send_message(chat_id, reply, reply_markup=back_keyboard())
         with data_lock:
             save_data()
         return
+
     with data_lock:
         current_count = user_message_count.get(chat_id, 0)
         next_count = current_count + 1
@@ -1290,11 +1489,13 @@ def handle_text_chat(message):
             pending_charge = True
         user_message_count[chat_id] = next_count
         save_data()
-    reply = ask_deepseek(message.text)
+
+    reply = run_agent(chat_id, message.text)
+
     if pending_charge and reply and not reply.startswith("⚠️") and not reply.startswith("❌"):
         with data_lock:
             user_credits[chat_id] -= CREDIT_COSTS["deepseek_session"]
-            user_credit_history[chat_id].append((time.time(), -CREDIT_COSTS["deepseek_session"], "Пакет из 50 сообщений DeepSeek"))
+            user_credit_history[chat_id].append((time.time(), -CREDIT_COSTS["deepseek_session"], "Пакет из 50 сообщений Агента"))
             user_message_count[chat_id] = 0
             save_data()
         bot.send_message(chat_id, f"💬 Использовано 50 сообщений. Списано {CREDIT_COSTS['deepseek_session']} 🔷. Осталось: {user_credits[chat_id]} 🔷.")
@@ -1302,7 +1503,8 @@ def handle_text_chat(message):
         with data_lock:
             user_message_count[chat_id] -= 1
             save_data()
-        bot.send_message(chat_id, "⚠️ Ошибка получения ответа. 🔷 не списаны.")
+        bot.send_message(chat_id, "⚠️ Ошибка получения ответа агента. 🔷 не списаны.")
+
     bot.send_message(chat_id, reply, reply_markup=back_keyboard())
     with data_lock:
         save_data()
