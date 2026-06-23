@@ -83,7 +83,7 @@ ASPECT_PROMPTS = {
     "4:3": "standard 4:3 photo composition, classic portrait or landscape ratio",
 }
 
-# --- TELEGRAM WEB APP HTML TEMPLATE ---
+# --- TELEGRAM WEB APP HTML TEMPLATE (PER-SCENE REFERENCE UI) ---
 WEBAPP_HTML = """
 <!DOCTYPE html>
 <html lang="ru">
@@ -103,53 +103,50 @@ WEBAPP_HTML = """
         }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-            background-color: var(--bg-color);
-            color: var(--text-color);
-            margin: 0;
-            padding: 16px;
-            padding-bottom: 90px;
+            background-color: var(--bg-color); color: var(--text-color); margin: 0; padding: 16px; padding-bottom: 90px;
         }
-        .header { text-align: center; margin-bottom: 20px; }
+        .header { text-align: center; margin-bottom: 18px; }
         .header h1 { font-size: 20px; margin: 0; font-weight: 700; }
         .header p { font-size: 13px; color: var(--hint-color); margin: 4px 0 0 0; }
-        .card {
-            background: var(--sec-bg);
-            border-radius: 16px;
-            padding: 16px;
-            margin-bottom: 16px;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-        }
+        .card { background: var(--sec-bg); border-radius: 16px; padding: 16px; margin-bottom: 16px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }
         .card-title { font-size: 15px; font-weight: 600; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
         .aspect-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
         .aspect-btn {
-            background: rgba(255,255,255,0.05);
-            border: 2px solid transparent;
-            color: var(--text-color);
+            background: rgba(255,255,255,0.05); border: 2px solid transparent; color: var(--text-color);
             padding: 10px; border-radius: 12px; text-align: center; font-size: 13px; font-weight: 500; cursor: pointer; transition: all 0.2s;
         }
         .aspect-btn.active { border-color: var(--btn-color); background: rgba(59, 130, 246, 0.15); }
-        .scene-block { background: rgba(0,0,0,0.2); border-radius: 12px; padding: 14px; margin-bottom: 12px; }
-        .scene-head { display: flex; justify-content: space-between; align-items: center; font-size: 14px; font-weight: 600; margin-bottom: 8px; }
-        .scene-del { color: #ef4444; font-size: 12px; cursor: pointer; }
+        
+        .scene-block { background: rgba(0,0,0,0.25); border-radius: 14px; padding: 14px; margin-bottom: 14px; border: 1px solid rgba(255,255,255,0.05); }
+        .scene-head { display: flex; justify-content: space-between; align-items: center; font-size: 14px; font-weight: 600; margin-bottom: 10px; }
+        .scene-del { color: #ef4444; font-size: 12px; cursor: pointer; padding: 4px; }
+        
         textarea {
             width: 100%; box-sizing: border-box; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1);
-            border-radius: 10px; color: var(--text-color); padding: 10px; font-size: 14px; resize: none; height: 64px; outline: none;
+            border-radius: 10px; color: var(--text-color); padding: 10px; font-size: 14px; resize: none; height: 60px; outline: none; margin-bottom: 10px;
         }
         textarea:focus { border-color: var(--btn-color); }
-        .dur-row { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; font-size: 13px; color: var(--hint-color); }
-        input[type="range"] { accent-color: var(--btn-color); width: 65%; }
-        .add-scene-btn { width: 100%; padding: 12px; background: rgba(255,255,255,0.08); border: none; border-radius: 12px; color: var(--text-color); font-weight: 600; font-size: 14px; cursor: pointer; }
-        .upload-zone { border: 2px dashed rgba(255,255,255,0.2); border-radius: 12px; padding: 20px; text-align: center; cursor: pointer; margin-bottom: 12px; }
-        .thumbs-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
-        .thumb-item { position: relative; aspect-ratio: 1; border-radius: 8px; overflow: hidden; background: #000; }
-        .thumb-item img { width: 100%; height: 100%; object-fit: cover; }
-        .thumb-del {
-            position: absolute; top: 2px; right: 2px; background: rgba(0,0,0,0.7); color: #fff; border-radius: 50%;
-            width: 18px; height: 18px; font-size: 12px; display: flex; align-items: center; justify-content: center; cursor: pointer;
+        
+        .scene-img-box {
+            border: 1px dashed rgba(255,255,255,0.2); border-radius: 10px; padding: 10px; text-align: center; cursor: pointer;
+            background: rgba(255,255,255,0.02); transition: all 0.2s; position: relative; overflow: hidden; min-height: 36px;
+            display: flex; align-items: center; justify-content: center;
         }
+        .scene-img-box:hover { border-color: var(--btn-color); }
+        .scene-img-box img { max-height: 120px; border-radius: 6px; object-fit: contain; }
+        .empty-hint { font-size: 12px; color: var(--hint-color); display: flex; align-items: center; gap: 6px; }
+        .del-img-badge {
+            position: absolute; top: 6px; right: 6px; background: rgba(239, 68, 68, 0.9); color: #fff;
+            border-radius: 50%; width: 22px; height: 22px; font-size: 12px; display: flex; align-items: center; justify-content: center; cursor: pointer;
+        }
+
+        .dur-row { display: flex; justify-content: space-between; align-items: center; margin-top: 12px; font-size: 13px; color: var(--hint-color); }
+        input[type="range"] { accent-color: var(--btn-color); width: 60%; }
+        
+        .add-scene-btn { width: 100%; padding: 14px; background: rgba(255,255,255,0.08); border: none; border-radius: 12px; color: var(--text-color); font-weight: 600; font-size: 14px; cursor: pointer; }
         .main-btn {
             position: fixed; bottom: 16px; left: 16px; right: 16px; background: var(--btn-color); color: var(--btn-text);
-            border: none; padding: 16px; border-radius: 14px; font-size: 16px; font-weight: 700; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.3); cursor: pointer; text-align: center;
+            border: none; padding: 16px; border-radius: 14px; font-size: 16px; font-weight: 700; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.4); cursor: pointer; text-align: center;
         }
         .main-btn:disabled { opacity: 0.5; }
     </style>
@@ -158,11 +155,11 @@ WEBAPP_HTML = """
 
 <div class="header">
     <h1>✨ Kling 3.0 Studio</h1>
-    <p>Режиссерский конструктор многосценового видео</p>
+    <p>Покадровый конструктор с референсом в каждой сцене</p>
 </div>
 
 <div class="card">
-    <div class="card-title">Соотношение сторон кадра</div>
+    <div class="card-title">Формат кадра</div>
     <div class="aspect-grid">
         <div class="aspect-btn active" onclick="setAspect('16:9', this)">🖥 16:9</div>
         <div class="aspect-btn" onclick="setAspect('9:16', this)">📱 9:16</div>
@@ -172,85 +169,78 @@ WEBAPP_HTML = """
 
 <div class="card">
     <div class="card-title">
-        <span>Сценарий по кадрам</span>
-        <span style="font-size:13px; color:var(--btn-color)" id="totalSec">Итого: 3с (15 🔷)</span>
+        <span>Сцены фильма (макс. 6)</span>
+        <span style="font-size:13px; color:var(--btn-color)" id="totalSec">3с (15 🔷)</span>
     </div>
     <div id="scenesContainer"></div>
-    <button class="add-scene-btn" onclick="addScene()" id="addBtn">+ Добавить кадр (сцену)</button>
+    <button class="add-scene-btn" onclick="addScene()" id="addBtn">+ Добавить следующий кадр</button>
 </div>
 
-<div class="card">
-    <div class="card-title">
-        <span>Опорные референсы стиля</span>
-        <span style="font-size:12px; color:var(--hint-color)"><span id="photoCount">0</span>/9 фото</span>
-    </div>
-    <div class="upload-zone" onclick="document.getElementById('fileIn').click()">
-        <div style="font-size:24px">📸</div>
-        <div style="font-size:13px; margin-top:4px">Нажмите для выбора изображений</div>
-        <div style="font-size:11px; color:var(--hint-color); margin-top:2px">1-е старт видео, финальное конец, остальные персонажи/стиль</div>
-    </div>
-    <input type="file" id="fileIn" multiple accept="image/*" style="display:none" onchange="handleFiles(this.files)">
-    <div class="thumbs-grid" id="thumbsGrid"></div>
-</div>
-
-<button class="main-btn" id="submitBtn" onclick="submitVideo()">🚀 Запустить рендер (15 🔷)</button>
+<input type="file" id="hiddenFile" accept="image/*" style="display:none">
+<button class="main-btn" id="submitBtn" onclick="submitStudio()">🚀 Запустить рендер (15 🔷)</button>
 
 <script>
     const tg = window.Telegram.WebApp;
-    tg.ready();
-    tg.expand();
+    tg.ready(); tg.expand();
 
     let currentAspect = '16:9';
-    let scenes = [{ prompt: '', dur: 3 }];
-    let photosB64 = [];
+    let activeUploadIdx = null;
+    let scenes = [{ prompt: '', dur: 3, photo: null }];
 
     function renderScenes() {
         const cont = document.getElementById('scenesContainer');
         cont.innerHTML = '';
         scenes.forEach((sc, idx) => {
+            let imgHtml = sc.photo 
+                ? `<img src="data:image/jpeg;base64,${sc.photo}"><div class="del-img-badge" onclick="event.stopPropagation(); removePhoto(${idx})">✕</div>`
+                : `<div class="empty-hint"><span style="font-size:16px">🖼</span> Прикрепить картинку для Сцены ${idx+1}</div>`;
+
             cont.innerHTML += `
                 <div class="scene-block">
                     <div class="scene-head">
-                        <span>Кадр ${idx + 1}</span>
+                        <span>Сцена ${idx + 1}</span>
                         ${scenes.length > 1 ? `<span class="scene-del" onclick="delScene(${idx})">Удалить</span>` : ''}
                     </div>
-                    <textarea placeholder="Что происходит в кадре..." oninput="scenes[${idx}].prompt = this.value">${sc.prompt}</textarea>
+                    <textarea placeholder="Что происходит в этой сцене..." oninput="scenes[${idx}].prompt = this.value">${sc.prompt}</textarea>
+                    <div class="scene-img-box" onclick="triggerUpload(${idx})">${imgHtml}</div>
                     <div class="dur-row">
-                        <span>Длительность:</span>
+                        <span>Длительность кадра:</span>
                         <input type="range" min="2" max="6" value="${sc.dur}" oninput="scenes[${idx}].dur = parseInt(this.value); updateSummary()">
                         <strong style="color:var(--text-color)">${sc.dur}с</strong>
                     </div>
                 </div>
             `;
         });
-        document.getElementById('addBtn').style.display = scenes.length >= 5 ? 'none' : 'block';
+        document.getElementById('addBtn').style.display = scenes.length >= 6 ? 'none' : 'block';
         updateSummary();
     }
 
-    function addScene() {
-        if (scenes.length < 5) {
-            scenes.push({ prompt: '', dur: 3 });
-            renderScenes();
-        }
-    }
-
-    function delScene(idx) {
-        scenes.splice(idx, 1);
-        renderScenes();
-    }
-
+    function addScene() { if (scenes.length < 6) { scenes.push({ prompt: '', dur: 3, photo: null }); renderScenes(); } }
+    function delScene(i) { scenes.splice(i, 1); renderScenes(); }
     function setAspect(asp, el) {
         currentAspect = asp;
         document.querySelectorAll('.aspect-btn').forEach(b => b.classList.remove('active'));
         el.classList.add('active');
     }
 
-    function updateSummary() {
-        const tot = scenes.reduce((a, b) => a + b.dur, 0);
-        const cost = tot * 5;
-        document.getElementById('totalSec').innerText = `Итого: ${tot}с (${cost} 🔷)`;
-        document.getElementById('submitBtn').innerText = `🚀 Запустить рендер (${cost} 🔷)`;
+    function triggerUpload(idx) {
+        activeUploadIdx = idx;
+        document.getElementById('hiddenFile').click();
     }
+
+    function removePhoto(idx) {
+        scenes[idx].photo = null;
+        renderScenes();
+    }
+
+    document.getElementById('hiddenFile').addEventListener('change', async function(e) {
+        if (e.target.files && e.target.files[0] && activeUploadIdx !== null) {
+            const b64 = await compressImg(e.target.files[0]);
+            scenes[activeUploadIdx].photo = b64;
+            renderScenes();
+        }
+        e.target.value = '';
+    });
 
     function compressImg(file) {
         return new Promise(res => {
@@ -272,67 +262,36 @@ WEBAPP_HTML = """
         });
     }
 
-    async function handleFiles(files) {
-        for (let f of files) {
-            if (photosB64.length < 9) {
-                const b64 = await compressImg(f);
-                photosB64.push(b64);
-            }
-        }
-        renderThumbs();
+    function updateSummary() {
+        const tot = scenes.reduce((a, b) => a + b.dur, 0);
+        const cost = tot * 5;
+        document.getElementById('totalSec').innerText = `${tot}с (${cost} 🔷)`;
+        document.getElementById('submitBtn').innerText = `🚀 Запустить рендер фильма (${cost} 🔷)`;
     }
 
-    function renderThumbs() {
-        const grid = document.getElementById('thumbsGrid');
-        grid.innerHTML = '';
-        photosB64.forEach((b64, i) => {
-            grid.innerHTML += `
-                <div class="thumb-item">
-                    <img src="data:image/jpeg;base64,${b64}">
-                    <div class="thumb-del" onclick="photosB64.splice(${i},1); renderThumbs()">✕</div>
-                </div>
-            `;
-        });
-        document.getElementById('photoCount').innerText = photosB64.length;
-    }
-
-    async function submitVideo() {
-        const valid = scenes.every(s => s.prompt.trim().length > 0);
-        if (!valid) {
-            tg.showAlert('Пожалуйста, заполните описание действия для каждой сцены!');
+    async function submitStudio() {
+        if (scenes.some(s => s.prompt.trim().length === 0)) {
+            tg.showAlert('Пожалуйста, заполните текстовое описание действия для каждой созданной сцены!');
             return;
         }
-
         const btn = document.getElementById('submitBtn');
-        btn.disabled = true;
-        btn.innerText = '⏳ Отправка в студию...';
+        btn.disabled = true; btn.innerText = '⏳ Передача в студию...';
 
         const payload = {
             user_id: tg.initDataUnsafe?.user?.id || 0,
-            scenes: scenes.map(s => ({ prompt: s.prompt, duration: s.dur })),
-            aspect_ratio: currentAspect,
-            photos: photosB64
+            scenes: scenes,
+            aspect_ratio: currentAspect
         };
 
         try {
             const r = await fetch('/api/webapp_submit_video', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
             });
             const res = await r.json();
-            if (res.ok) {
-                tg.close();
-            } else {
-                tg.showAlert('Ошибка: ' + (res.error || 'Не удалось создать видео'));
-                btn.disabled = false;
-                updateSummary();
-            }
-        } catch (e) {
-            tg.showAlert('Ошибка связи с сервером бота');
-            btn.disabled = false;
-            updateSummary();
-        }
+            if (res.ok) tg.close();
+            else { tg.showAlert('Ошибка: ' + res.error); btn.disabled = false; updateSummary(); }
+        } catch(e) { tg.showAlert('Ошибка связи с сервером бота'); btn.disabled = false; updateSummary(); }
     }
 
     renderScenes();
@@ -467,7 +426,6 @@ def _build_headers():
 def helper_web_search(query):
     try:
         items = []
-        # Шаг 1: Быстрая проверка Google News RSS (0.3 сек, без капч)
         rss_url = f"https://news.google.com/rss/search?q={query}&hl=ru&gl=RU&ceid=RU:ru"
         r = requests.get(rss_url, timeout=5)
         if r.status_code == 200:
@@ -476,7 +434,6 @@ def helper_web_search(query):
                 title = item.find("title").text if item.find("title") is not None else ""
                 items.append(f"Новость: {title}")
 
-        # Шаг 2: Дополняем поиском DuckDuckGo Lite
         if len(items) < 3:
             url = "https://lite.duckduckgo.com/lite/"
             headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
@@ -486,7 +443,7 @@ def helper_web_search(query):
             clean = [re.sub(r'<.*?>', '', s).strip() for s in snippets[:3]]
             items.extend(clean)
 
-        return items if items else ["Актуальных данных по этому запросу в поисковике не обнаружено."]
+        return items if items else ["Актуальных данных по этому запросу не обнаружено."]
     except Exception as e:
         return [f"Справка поиска: {e}"]
 
@@ -635,7 +592,6 @@ def run_agent(chat_id, user_text):
     headers = _build_headers()
 
     for turn in range(4):
-        # ИСПРАВЛЕНО: переключено на deepseek-chat (V3) для 3-кратного ускорения и стабильности инструментов
         payload = {
             "model": "deepseek/deepseek-chat",
             "messages": messages,
@@ -968,47 +924,44 @@ def generate_video_async(chat_id, prompt=None, first_frame_b64=None, last_frame_
     headers = _build_headers()
     payload = {"model": model_id, "duration": duration, "aspect_ratio": aspect}
 
+    frame_images = []
+
     if multi_prompt:
-        payload["multi_prompt"] = multi_prompt
-        model_display += " [Мультисцена]"
+        clean_mp = []
+        for idx, item in enumerate(multi_prompt):
+            sc_dict = {"prompt": item.get("prompt", ""), "duration": int(item.get("duration", 3))}
+            if item.get("photo"):
+                d_url = f"data:image/jpeg;base64,{compress_image_if_needed(item['photo'])}"
+                sc_dict["image"] = d_url
+                f_type = "first_frame" if idx == 0 else ("last_frame" if idx == len(multi_prompt)-1 else "reference")
+                frame_images.append({"type": "image_url", "image_url": {"url": d_url}, "frame_type": f_type})
+            clean_mp.append(sc_dict)
+        payload["multi_prompt"] = clean_mp
+        model_display += " [Мультисцена Studio]"
     elif prompt:
         payload["prompt"] = prompt
+        if multi_photos_b64 and isinstance(multi_photos_b64, list):
+            for idx, b64 in enumerate(multi_photos_b64[:9]):
+                d_url = f"data:image/jpeg;base64,{compress_image_if_needed(b64)}"
+                f_type = "first_frame" if idx == 0 else ("last_frame" if idx == len(multi_photos_b64)-1 and len(multi_photos_b64)>1 else "reference")
+                frame_images.append({"type": "image_url", "image_url": {"url": d_url}, "frame_type": f_type})
+        else:
+            if first_frame_b64:
+                d_url = f"data:image/jpeg;base64,{compress_image_if_needed(first_frame_b64)}"
+                frame_images.append({"type": "image_url", "image_url": {"url": d_url}, "frame_type": "first_frame"})
+            if last_frame_b64:
+                d_url = f"data:image/jpeg;base64,{compress_image_if_needed(last_frame_b64)}"
+                frame_images.append({"type": "image_url", "image_url": {"url": d_url}, "frame_type": "last_frame"})
 
     features = VIDEO_MODEL_FEATURES.get(model_id, {})
     if features.get("resolution"):
         payload["resolution"] = resolution
     if features.get("audio"):
         payload["audio"] = audio
-
-    frame_images = []
-    input_refs = []
-
-    if multi_photos_b64 and isinstance(multi_photos_b64, list):
-        for idx, b64 in enumerate(multi_photos_b64[:9]):
-            d_url = f"data:image/jpeg;base64,{compress_image_if_needed(b64)}"
-            f_type = "reference"
-            if idx == 0:
-                f_type = "first_frame"
-            elif idx == len(multi_photos_b64) - 1 and len(multi_photos_b64) > 1:
-                f_type = "last_frame"
-
-            frame_images.append({"type": "image_url", "image_url": {"url": d_url}, "frame_type": f_type})
-            input_refs.append({"type": "image_url", "image_url": {"url": d_url}})
-    else:
-        if first_frame_b64:
-            d_url = f"data:image/jpeg;base64,{compress_image_if_needed(first_frame_b64)}"
-            frame_images.append({"type": "image_url", "image_url": {"url": d_url}, "frame_type": "first_frame"})
-            input_refs.append({"type": "image_url", "image_url": {"url": d_url}})
-        if last_frame_b64:
-            d_url = f"data:image/jpeg;base64,{compress_image_if_needed(last_frame_b64)}"
-            frame_images.append({"type": "image_url", "image_url": {"url": d_url}, "frame_type": "last_frame"})
-            input_refs.append({"type": "image_url", "image_url": {"url": d_url}})
-
     if frame_images:
         payload["frame_images"] = frame_images
-        payload["input_references"] = input_refs
 
-    logging.info(f"Video payload: {json.dumps({k: v for k, v in payload.items() if k not in ('frame_images', 'input_references')}, ensure_ascii=False)}")
+    logging.info(f"Video payload: {json.dumps({k: v for k, v in payload.items() if k != 'frame_images'}, ensure_ascii=False)}")
     try:
         resp = requests.post(OPENROUTER_VIDEO_URL, json=payload, headers=headers, timeout=60)
         if resp.status_code not in (200, 202):
@@ -1165,7 +1118,7 @@ def menu_help(message):
     text = (
         "📖 <b>Руководство пользователя NESPIM</b>\n\n"
         "🤖 <b>1. Спросить (ИИ-Агент)</b>\n"
-        "Твой умный ассистент. Он помнит контекст диалога, умеет гуглить свежую информацию, читать ссылки и сам рисовать арты или снимать трейлеры по просьбе.\n"
+        "Твой умный ассистент. Он помнит контекст диалога, гуглит свежую информацию, читает ссылки и сам рисует арты или снимать трейлеры.\n"
         "Команды агенту в чате:\n"
         "• <i>«Забудь всё»</i> — очистить память разговора.\n"
         "• <i>«Какой баланс?»</i> — проверить токены.\n"
@@ -1182,7 +1135,7 @@ def menu_help(message):
         "💎 <b>Цена:</b> 3 🔷 за обработку.\n\n"
         "🎥 <b>4. Создать видео</b>\n"
         "• <b>Обычное видео</b> — анимация картинок или ролик по тексту.\n"
-        "• <b>Визуальная Студия Kling 3.0 (Web App)</b> — супер-конструктор! Откройте удобное мини-приложение с ползунками секунд и галереей загрузки до 9 фото.\n"
+        "• <b>Визуальная Студия Kling 3.0 (Web App)</b> — покадровый конструктор! В каждую созданную сцену можно вставить свой референс картинки.\n"
         "💎 <b>Цена:</b> 5 🔷 за 1 секунду видео.\n\n"
         "💰 <b>5. Баланс и покупки</b>\n"
         "В «Профиле» виден остаток токенов. Пополнить баланс можно в «Магазине» за Telegram Stars ⭐️ мгновенно или переводом на карту.\n\n"
@@ -1375,7 +1328,7 @@ def start(message):
     chat_id = message.chat.id
     user_last_activity[chat_id] = time.time()
     user_state[chat_id] = None
-    send_main_menu(chat_id, "👋 Привет! Я умею генерировать изображения, редактировать фото, снимать мини-фильмы Kling 3.0 в удобной Web-Студии, а в режиме «Чат» работаю как полноценный ИИ-агент. Выбери действие ниже.")
+    send_main_menu(chat_id, "👋 Привет! Я умею генерировать изображения, редактировать фото, снимать видео Kling 3.0 в удобной Web-Студии, а в режиме «Чат» работаю как полноценный ИИ-агент. Выбери действие ниже.")
 
 def send_main_menu(chat_id, text="Главное меню:"):
     bot.send_message(chat_id, text, reply_markup=main_menu_keyboard())
@@ -1415,7 +1368,7 @@ def menu_video(message):
 
     markup = InlineKeyboardMarkup(row_width=1)
     if studio_url:
-        markup.add(InlineKeyboardButton("✨ Kling 3.0 Видео-Студия [Визуальный Web App]", web_app=WebAppInfo(url=studio_url)))
+        markup.add(InlineKeyboardButton("✨ Kling 3.0 Видео-Студия [Покадровый Web App]", web_app=WebAppInfo(url=studio_url)))
     markup.add(
         InlineKeyboardButton("📝 Текст в видео (Обычный промпт)", callback_data="vid_text"),
         InlineKeyboardButton("🎬 Мультисцена через диалог бота", callback_data="vid_multi"),
@@ -1521,10 +1474,10 @@ def video_params_done(call):
         user_state[chat_id] = "awaiting_video_multi_prompt"
         bot.send_message(
             chat_id,
-            "🎬 <b>Шаг 1 из 2: Сценарий (Kling 3.0 Pro)</b>\n\n"
+            "🎬 <b>Сценарий (Kling 3.0 Pro)</b>\n\n"
             "Опишите сюжет ролика по последовательным сценам. Каждую сцену пишите с новой строки в формате:\n"
             "<code>[секунды] Описание действия в кадре</code>\n\n"
-            "📌 <b>Пример (общая сумма 10 сек):</b>\n"
+            "📌 <b>Пример (сумма 10 сек):</b>\n"
             "<code>3 Крупный план: рыцарь в сияющих доспехах смотрит на замок</code>\n"
             "<code>4 Средний план: он достает меч из ножен под раскаты грома</code>\n"
             "<code>3 Общий план: молния ударяет в главную башню замка</code>\n\n"
@@ -1675,6 +1628,72 @@ def handle_video_multi_prompt(message):
     )
     user_video_params[chat_id]["multi_status_msg_id"] = msg.message_id
 
+# ================== CHAT (AGENT MODE) ==================
+@bot.message_handler(func=lambda m: True, content_types=["text"])
+def handle_text_chat(message):
+    if message.text.startswith("/"):
+        return
+    if message.text in [
+        "🖼 Создать изображение", "🎨 Редактировать фото", "🎥 Создать видео",
+        "💬 Спросить (чат)", "👤 Профиль", "💰 Магазин", "🔙 Главное меню",
+        "📖 Инструкция",
+    ]:
+        send_main_menu(message.chat.id, "Пожалуйста, используйте кнопки меню.")
+        return
+    chat_id = message.chat.id
+    user_last_activity[chat_id] = time.time()
+    state = user_state.get(chat_id)
+    if state in [
+        "awaiting_prompt", "awaiting_generate_prompt", "awaiting_photo",
+        "awaiting_video_prompt", "awaiting_video_multi_prompt", "awaiting_multi_photos",
+        "awaiting_video_image_first", "awaiting_video_image_last", "awaiting_video_last_choice",
+        "selecting_aspect", "select_model_edit", "select_model_generate",
+    ]:
+        return
+
+    if chat_id == ADMIN_ID:
+        reply = run_agent(chat_id, message.text)
+        bot.send_message(chat_id, reply, reply_markup=back_keyboard())
+        with data_lock:
+            save_data()
+        return
+
+    with data_lock:
+        current_count = user_message_count.get(chat_id, 0)
+        next_count = current_count + 1
+        pending_charge = False
+        if next_count >= 50:
+            if user_credits.get(chat_id, 0) < CREDIT_COSTS["deepseek_session"]:
+                save_data()
+                bot.send_message(chat_id, "❌ Недостаточно 🔷 для продолжения чата. Пополните баланс в магазине 💰.")
+                return
+            pending_charge = True
+        user_message_count[chat_id] = next_count
+        save_data()
+
+    reply = run_agent(chat_id, message.text)
+
+    if pending_charge and reply and not reply.startswith("⚠️") and not reply.startswith("❌"):
+        with data_lock:
+            user_credits[chat_id] -= CREDIT_COSTS["deepseek_session"]
+            user_credit_history[chat_id].append((time.time(), -CREDIT_COSTS["deepseek_session"], "Пакет из 50 сообщений Агента"))
+            user_message_count[chat_id] = 0
+            save_data()
+        bot.send_message(chat_id, f"💬 Использовано 50 сообщений. Списано {CREDIT_COSTS['deepseek_session']} 🔷. Осталось: {user_credits[chat_id]} 🔷.")
+    elif pending_charge:
+        with data_lock:
+            user_message_count[chat_id] -= 1
+            save_data()
+        bot.send_message(chat_id, "⚠️ Ошибка получения ответа агента. 🔷 не списаны.")
+
+    bot.send_message(chat_id, reply, reply_markup=back_keyboard())
+    with data_lock:
+        save_data()
+
+@bot.message_handler(func=lambda m: True)
+def handle_other(message):
+    bot.send_message(message.chat.id, "Пожалуйста, используй кнопки меню.")
+
 # ================== WEBHOOK & FLASK STUDIO ENDPOINTS ==================
 @app.route("/")
 def index():
@@ -1694,7 +1713,6 @@ def webapp_submit_video():
     uid = int(data.get("user_id", 0))
     scenes = data.get("scenes", [])
     asp = data.get("aspect_ratio", "16:9")
-    photos = data.get("photos", [])
 
     if not uid or not scenes:
         return jsonify({"ok": False, "error": "Неверные данные формы"}), 400
@@ -1713,7 +1731,7 @@ def webapp_submit_video():
     try:
         bot.send_message(
             uid,
-            f"🎬 <b>Заказ из Визуальной Студии принят!</b>\nСюжет из {len(scenes)} кадров ({total_dur} сек), референсов: {len(photos)}.\nЗапускаю рендер Kling 3.0 Pro...",
+            f"🎬 <b>Заказ из Визуальной Студии принят!</b>\nСюжет: {len(scenes)} кадров ({total_dur} сек).\nЗапускаю рендер Kling 3.0 Pro...",
             parse_mode="HTML"
         )
     except Exception as e:
@@ -1722,14 +1740,15 @@ def webapp_submit_video():
     user_video_model[uid] = "kwaivgi/kling-v3.0-pro"
     user_video_params[uid] = {"duration": total_dur, "aspect_ratio": asp, "audio": True}
 
-    Thread(target=generate_video_async, args=(uid, None, None, None, scenes, photos), daemon=True).start()
+    Thread(target=generate_video_async, args=(uid, None, None, None, scenes), daemon=True).start()
     return jsonify({"ok": True})
 
 @app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
 def webhook():
-    if request.headers.get("content-type") == "application/json":
+    # ИСПРАВЛЕНО: request.is_json вместо == 'application/json', чтобы принимать новые заголовки Телеграма с charset
+    if request.is_json:
         try:
-            json_data = json.loads(request.get_data().decode("utf-8"))
+            json_data = request.get_json()
             update = telebot.types.Update.de_json(json_data)
             bot.process_new_updates([update])
             return "OK", 200
@@ -1770,8 +1789,10 @@ def set_webhook():
     except Exception as e:
         logging.error(f"❌ Webhook exception: {e}")
 
+# Автоматически регистрируем вебхук в фоне при старте модуля (поддержка Gunicorn на Render)
+Thread(target=set_webhook, daemon=True).start()
+
 if __name__ == "__main__":
-    set_webhook()
     port = int(os.environ.get("PORT", 8080))
     logging.info(f"Starting Flask on port {port}...")
     app.run(host="0.0.0.0", port=port)
