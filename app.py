@@ -59,9 +59,13 @@ user_video_model = {}
 user_video_history = defaultdict(list)
 
 # --- CHAIN EDIT ---
-user_last_image = {}          # base64 последнего результата редактирования
-user_last_edit_model = {}     # модель, которой редактировали
-user_last_face_mode = {}      # режим лица, который был применён
+user_last_image = {}
+user_last_edit_model = {}
+user_last_face_mode = {}
+user_last_edit_aspect = {}
+
+# --- EDIT ASPECT ---
+user_edit_aspect = {}
 
 # --- MODELS ---
 FLUX_MODEL = "black-forest-labs/flux.2-pro"
@@ -233,7 +237,6 @@ def _build_headers():
     }
 
 def _prepare_image_bytes(img_data, quality=95, max_size_mb=5):
-    """Конвертирует в JPEG, сохраняя оригинальное разрешение. Сжимает только если > max_size_mb."""
     try:
         img = Image.open(io.BytesIO(img_data))
         if img.mode != 'RGB':
@@ -241,7 +244,6 @@ def _prepare_image_bytes(img_data, quality=95, max_size_mb=5):
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=quality, optimize=True)
         output = buf.getvalue()
-        # Если всё ещё больше лимита — уменьшаем качество
         if len(output) > max_size_mb * 1024 * 1024 and quality > 60:
             buf = io.BytesIO()
             img.save(buf, format="JPEG", quality=75, optimize=True)
@@ -842,6 +844,8 @@ def back_to_main(message):
     user_last_image.pop(chat_id, None)
     user_last_edit_model.pop(chat_id, None)
     user_last_face_mode.pop(chat_id, None)
+    user_last_edit_aspect.pop(chat_id, None)
+    user_edit_aspect.pop(chat_id, None)
     send_main_menu(chat_id)
 
 # ================== CALLBACKS ==================
@@ -936,7 +940,6 @@ def select_generate_model(call):
         user_generate_model[chat_id] = "seedream"
     bot.answer_callback_query(call.id, f"Выбрана модель: {data}")
     bot.delete_message(chat_id, call.message.message_id)
-    # Выбор формата
     user_state[chat_id] = "selecting_aspect"
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
@@ -957,6 +960,7 @@ def set_aspect(call):
     bot.send_message(chat_id, f"Формат: {aspect}. Введите описание изображения:", reply_markup=back_keyboard())
     bot.answer_callback_query(call.id, f"Формат {aspect}")
 
+# --- EDITING: model → aspect → face → photo ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith("edit_"))
 def select_edit_model(call):
     chat_id = call.message.chat.id
@@ -966,6 +970,23 @@ def select_edit_model(call):
     elif data == "edit_seedream":
         user_edit_model[chat_id] = "seedream"
     bot.answer_callback_query(call.id, f"Выбрана модель: {data}")
+    bot.delete_message(chat_id, call.message.message_id)
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("📱 9:16 (сторис)", callback_data="edit_aspect_9_16"),
+        InlineKeyboardButton("🖥 16:9 (широкий)", callback_data="edit_aspect_16_9"),
+        InlineKeyboardButton("⬜ 1:1 (квадрат)", callback_data="edit_aspect_1_1"),
+        InlineKeyboardButton("📷 4:3 (фото)", callback_data="edit_aspect_4_3"),
+    )
+    bot.send_message(chat_id, "Выберите формат итогового изображения:", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("edit_aspect_"))
+def set_edit_aspect(call):
+    chat_id = call.message.chat.id
+    parts = call.data.split("_")
+    aspect = parts[2] + ":" + parts[3]
+    user_edit_aspect[chat_id] = aspect
+    bot.answer_callback_query(call.id, f"Формат: {aspect}")
     bot.delete_message(chat_id, call.message.message_id)
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
@@ -986,19 +1007,39 @@ def select_face_mode(call):
     user_state[chat_id] = "awaiting_photo"
     bot.send_message(chat_id, "📸 Загрузи фото, которое нужно отредактировать.", reply_markup=back_keyboard())
 
-# --- CHAIN EDIT: continue editing result ---
+# --- CHAIN EDIT callbacks ---
 @bot.callback_query_handler(func=lambda call: call.data == "edit_again")
 def edit_again(call):
     chat_id = call.message.chat.id
     if chat_id not in user_last_image:
         bot.answer_callback_query(call.id, "Нет сохранённого фото")
         return
+    
+    # Восстанавливаем всё состояние цепочки
     user_pending_photo[chat_id] = user_last_image[chat_id]
     user_edit_model[chat_id] = user_last_edit_model.get(chat_id, "flux")
     user_face_mode[chat_id] = user_last_face_mode.get(chat_id, "full_edit")
+    user_edit_aspect[chat_id] = user_last_edit_aspect.get(chat_id, "16:9")
     user_state[chat_id] = "awaiting_prompt"
+    
+    logging.info(f"[EDIT AGAIN] chat_id={chat_id}, model={user_edit_model[chat_id]}, "
+                 f"face={user_face_mode[chat_id]}, aspect={user_edit_aspect[chat_id]}")
+    
     bot.send_message(chat_id, "✏️ Введите новый промпт для доработки этого фото:", reply_markup=back_keyboard())
     bot.answer_callback_query(call.id, "Готово к редактированию")
+
+@bot.callback_query_handler(func=lambda call: call.data == "goto_main")
+def goto_main_handler(call):
+    chat_id = call.message.chat.id
+    for d in [user_state, user_edit_model, user_face_mode, user_generate_model, 
+              user_generate_aspect, user_pending_photo, user_last_image, 
+              user_last_edit_model, user_last_face_mode, user_last_edit_aspect,
+              user_edit_aspect, user_video_frames, user_video_params,
+              user_video_model, user_video_mode]:
+        d.pop(chat_id, None)
+    bot.delete_message(chat_id, call.message.message_id)
+    send_main_menu(chat_id)
+    bot.answer_callback_query(call.id, "Главное меню")
 
 @bot.message_handler(content_types=["photo"], func=lambda m: user_state.get(m.chat.id) == "awaiting_video_image_first")
 def handle_video_first_frame(message):
@@ -1050,7 +1091,6 @@ def handle_generate_prompt(message):
     user_state[chat_id] = None
     cost = CREDIT_COSTS["image_pro"]
     
-    # Добавляем формат к промпту
     aspect_hint = ASPECT_PROMPTS.get(aspect, "")
     full_prompt = f"{prompt}. {aspect_hint}" if aspect_hint else prompt
     
@@ -1110,11 +1150,21 @@ def handle_awaiting_prompt(message):
         bot.send_message(chat_id, "⚠️ Сначала загрузи фото.")
         send_main_menu(chat_id)
         return
+    
     model = user_edit_model.pop(chat_id, "flux")
     face_mode = user_face_mode.pop(chat_id, "full_edit")
+    aspect = user_edit_aspect.pop(chat_id, None)
     user_state[chat_id] = None
+    
+    # Формат добавляем только если это НЕ цепочка (чтобы не дублировать)
+    if aspect and aspect in ASPECT_PROMPTS:
+        if not prompt.lower().startswith(ASPECT_PROMPTS[aspect].lower()[:10]):
+            prompt = f"{ASPECT_PROMPTS[aspect]}. {prompt}"
+        user_last_edit_aspect[chat_id] = aspect
+    
     if face_mode == "keep_face":
         prompt = "Keep the face and facial features completely unchanged. Do not modify the face. Only apply the following changes: " + prompt
+    
     cost = CREDIT_COSTS["edit_pro"]
     with data_lock:
         if chat_id != ADMIN_ID:
@@ -1126,34 +1176,46 @@ def handle_awaiting_prompt(message):
             user_credit_history[chat_id].append((time.time(), -cost, f"Редактирование {model}"))
             save_data()
             bot.send_message(chat_id, f"✅ Списано {cost} 🔷. Осталось: {user_credits[chat_id]}")
+    
+    logging.info(f"[EDIT] chat_id={chat_id}, model={model}, face={face_mode}, aspect={aspect}")
     bot.send_message(chat_id, f"🎨 Редактирую через {model}...")
+    
     if model == "flux":
         img_data, error_msg = edit_image_flux(prompt, photo_base64)
     else:
         img_data, error_msg = edit_image_seedream(prompt, photo_base64)
+    
     if img_data:
         caption = f"✅ Отредактировано ({model})"
         if face_mode == "keep_face":
             caption += " с сохранением лица"
         
-        # Сохраняем оригинал для цепочки редактирования
+        # Сохраняем оригинал для цепочки редактирования — ДО отправки, в любом случае
         user_last_image[chat_id] = base64.b64encode(img_data).decode('utf-8')
         user_last_edit_model[chat_id] = model
         user_last_face_mode[chat_id] = face_mode
+        if aspect:
+            user_last_edit_aspect[chat_id] = aspect
         
         output, err = _prepare_image_bytes(img_data)
         if err:
             logging.error(f"Edit prepare error: {err}")
             output = img_data
         
-        markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("🔄 Продолжить редактирование", callback_data="edit_again"))
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            InlineKeyboardButton("🔄 Продолжить редактирование", callback_data="edit_again"),
+            InlineKeyboardButton("🔙 Главное меню", callback_data="goto_main"),
+        )
         
         try:
             bot.send_photo(chat_id, output, caption=caption, reply_markup=markup)
         except Exception as e:
             logging.error(f"Edit image send error: {e}")
-            bot.send_document(chat_id, img_data, caption=caption, reply_markup=markup)
+            # Отправляем как документ, но кнопки обязательно сохраняем
+            bot.send_document(chat_id, io.BytesIO(img_data), caption=caption, reply_markup=markup)
+        return  # НЕ отправляем главное меню отдельным сообщением
+    
     elif error_msg:
         with data_lock:
             if chat_id != ADMIN_ID:
@@ -1162,6 +1224,7 @@ def handle_awaiting_prompt(message):
                 save_data()
                 bot.send_message(chat_id, f"❌ Ошибка редактирования. {cost} 🔷 возвращены.")
         bot.send_message(chat_id, f"❌ Не удалось отредактировать изображение.\n{error_msg}")
+        send_main_menu(chat_id)
     else:
         with data_lock:
             if chat_id != ADMIN_ID:
@@ -1169,7 +1232,7 @@ def handle_awaiting_prompt(message):
                 user_credit_history[chat_id].append((time.time(), cost, "Возврат за редактирование (пустой ответ)"))
                 save_data()
                 bot.send_message(chat_id, "❌ Не удалось отредактировать изображение. 🔷 возвращены.")
-    send_main_menu(chat_id)
+        send_main_menu(chat_id)
 
 # ================== VIDEO PROMPT ==================
 @bot.message_handler(func=lambda m: user_state.get(m.chat.id) == "awaiting_video_prompt")
