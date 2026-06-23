@@ -48,7 +48,7 @@ user_credits = defaultdict(int)
 user_credit_history = defaultdict(list)
 user_message_count = defaultdict(int)
 user_last_activity = defaultdict(float)
-user_chat_history = defaultdict(list)  # <--- ДОБАВЛЕНО: память диалогов агента
+user_chat_history = defaultdict(list)
 
 user_state = {}
 user_edit_model = {}
@@ -180,7 +180,7 @@ os.makedirs("static", exist_ok=True)
 VIDEO_MODEL_FEATURES = {
     "bytedance/seedance-2.0": {"audio": True, "resolution": True},
     "kwaivgi/kling-video-o1": {"audio": True, "resolution": True},
-    "kwaivgi/kling-v3-pro": {"audio": True, "resolution": True},
+    "kwaivgi/kling-v3.0-pro": {"audio": True, "resolution": True, "multi_prompt": True, "references": True},
 }
 
 PACKAGES = {
@@ -192,7 +192,7 @@ PACKAGES = {
 CREDIT_COSTS = {
     "image_pro": 2,
     "edit_pro": 3,
-    "video": {5: 25, 10: 50, 15: 100},
+    "video": {5: 25, 10: 50, 15: 75},
     "deepseek_session": 1,
 }
 
@@ -277,6 +277,36 @@ AGENT_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "generate_multiscene_video",
+            "description": "Снять кинематографичный многосценовый видеоролик с единым сюжетом (модель Kling 3.0 Pro со звуком). Списывает 5 токенов 🔷 за 1 секунду видео.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "scenes": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "prompt": {"type": "string", "description": "Детальное описание действия в кадре"},
+                                "duration": {"type": "integer", "description": "Длительность кадра в секундах (от 2 до 6)"}
+                            },
+                            "required": ["prompt", "duration"]
+                        },
+                        "description": "Список последовательных сцен видеоролика"
+                    },
+                    "aspect_ratio": {"type": "string", "enum": ["16:9", "9:16", "1:1"], "description": "Формат кадра"},
+                    "confirmed_by_user": {
+                        "type": "boolean",
+                        "description": "True ТОЛЬКО если в своем ПОСЛЕДНЕМ сообщении пользователь прямо написал 'Да / Создавай / Запускай видео' на предложенный вами сценарий. Если пользователь впервые попросил придумать видео — ставь False!"
+                    }
+                },
+                "required": ["scenes", "aspect_ratio", "confirmed_by_user"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_my_balance",
             "description": "Проверить текущий баланс токенов 🔷 пользователя и остаток сообщений в пакете чата",
             "parameters": {"type": "object", "properties": {}}
@@ -294,7 +324,6 @@ AGENT_TOOLS = [
 
 # ================== DEEPSEEK AGENT CORE ==================
 def ask_deepseek(prompt):
-    # Оставлено для обратной совместимости системных вызовов
     headers = _build_headers()
     payload = {"model": "deepseek/deepseek-v4-pro", "messages": [{"role": "user", "content": prompt}]}
     try:
@@ -312,17 +341,23 @@ def run_agent(chat_id, user_text):
         history = history[-18:]
 
     system_prompt = (
-        "Ты — персональный ИИ-агент и помощник в Telegram. Ты умный, вежливый, инициативный.\n"
+        "Ты — персональный ИИ-агент и кинорежиссер в Telegram. Ты умный, вежливый, инициативный.\n"
         "Твои возможности (инструменты):\n"
         "1. web_search — гуглить в интернете факты, новости, документацию.\n"
         "2. fetch_webpage — читать ссылки, присланные пользователем.\n"
         "3. generate_image — генерировать арты/картинки (нейросеть Flux Pro, стоит 2 🔷).\n"
-        "4. get_my_balance — проверять баланс токенов 🔷 пользователя.\n"
-        "5. clear_memory — очищать историю текущей беседы.\n\n"
-        "ВАЖНЫЕ ПРАВИЛА:\n"
-        "- Если юзер просит нарисовать картинку/арт/логотип — НЕ описывай её словами, а СРАЗУ вызывай функцию generate_image!\n"
+        "4. generate_multiscene_video — снимать многосценовые видео Kling 3.0 Pro (5 🔷/сек).\n"
+        "5. get_my_balance — проверять баланс токенов 🔷 пользователя.\n"
+        "6. clear_memory — очищать историю текущей беседы.\n\n"
+        "ВАЖНЕЙШИЕ ПРАВИЛА БЕЗОПАСНОСТИ ТРАТ:\n"
+        "- КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО вызывать функцию generate_multiscene_video без явного согласия пользователя!\n"
+        "  Когда юзер просит видеоролик или трейлер:\n"
+        "  1) Сначала составь и напиши ему красивый покадровый сценарий с секундами.\n"
+        "  2) Посчитай и укажи точную стоимость рендера (5 🔷 за 1 секунду видео).\n"
+        "  3) ОБЯЗАТЕЛЬНО задай вопрос: «Создаем видео по этому сценарию? Стоимость ХХ 🔷».\n"
+        "  4) Вызывай generate_multiscene_video с confirmed_by_user=True ТОЛЬКО тогда, когда юзер ответит «Да / Создавай / Запускай».\n"
+        "- Если юзер просит просто нарисовать арт/картинку — НЕ описывай её словами, а СРАЗУ вызывай generate_image.\n"
         "- Если юзер кидает ссылку — прочти её через fetch_webpage перед ответом.\n"
-        "- Если юзер спрашивает о событиях после 2024 года — используй web_search.\n"
         "- Отвечай понятно, емко, на языке собеседника (обычно русский)."
     )
 
@@ -401,6 +436,37 @@ def run_agent(chat_id, user_text):
                                         user_credits[chat_id] += cost
                                         save_data()
                                 res_content = "Ошибка генерации картинки (токены возвращены юзеру)."
+                    elif fn_name == "generate_multiscene_video":
+                        scenes = args.get("scenes", [])
+                        asp = args.get("aspect_ratio", "16:9")
+                        is_confirmed = args.get("confirmed_by_user", False)
+                        total_d = sum(s.get("duration", 3) for s in scenes)
+                        cost = total_d * 5
+
+                        if not is_confirmed:
+                            res_content = (
+                                f"СТОП! Правило безопасности платформы: вы НЕ можете запустить рендер видео без подтверждения юзером! "
+                                f"Выведи юзеру этот режиссерский сценарий (общая длительность {total_d} сек, цена {cost} 🔷) "
+                                f"и спроси его: 'Запускаем видеоролик в производство?'."
+                            )
+                        else:
+                            can_gen = False
+                            with data_lock:
+                                if chat_id == ADMIN_ID or user_credits.get(chat_id, 0) >= cost:
+                                    if chat_id != ADMIN_ID:
+                                        user_credits[chat_id] -= cost
+                                        user_credit_history[chat_id].append((time.time(), -cost, f"Агент: видео {total_d}с"))
+                                        save_data()
+                                    can_gen = True
+
+                            if not can_gen:
+                                res_content = f"Недостаточно 🔷. Нужно {cost}, баланс {user_credits.get(chat_id, 0)}."
+                            else:
+                                bot.send_message(chat_id, f"🎬 Принято! Агент отправляет сценарий в Kling 3.0 Pro ({total_d} сек)...")
+                                user_video_model[chat_id] = "kwaivgi/kling-v3.0-pro"
+                                user_video_params[chat_id] = {"duration": total_d, "aspect_ratio": asp, "audio": True, "resolution": "720p"}
+                                Thread(target=generate_video_async, args=(chat_id, None, None, None, scenes), daemon=True).start()
+                                res_content = "Генерация многосценового видео успешно запущена в фоновом потоке."
 
                     messages.append({
                         "role": "tool",
@@ -602,9 +668,11 @@ def poll_video_task(polling_url, headers, chat_id, status_message_id, model_disp
             pass
     bot.edit_message_text("❌ Истекло время ожидания (15 мин).", chat_id, status_message_id)
 
-def generate_video_async(chat_id, prompt, first_frame_b64=None, last_frame_b64=None):
-    duration = user_video_params.get(chat_id, {}).get("duration", 5)
-    cost = CREDIT_COSTS["video"].get(duration, 25)
+def generate_video_async(chat_id, prompt=None, first_frame_b64=None, last_frame_b64=None, multi_prompt=None, multi_photos_b64=None):
+    params = user_video_params.get(chat_id, {})
+    duration = params.get("duration", 5)
+    cost = duration * 5
+
     with data_lock:
         if chat_id != ADMIN_ID:
             if user_credits.get(chat_id, 0) < cost:
@@ -614,32 +682,62 @@ def generate_video_async(chat_id, prompt, first_frame_b64=None, last_frame_b64=N
             user_credit_history[chat_id].append((time.time(), -cost, f"Видео {duration}с"))
             save_data()
         bot.send_message(chat_id, f"✅ Списано {cost} 🔷. Осталось: {user_credits[chat_id]}")
-    params = user_video_params.get(chat_id, {})
+
     resolution = params.get("resolution", "480p")
     audio = params.get("audio", True)
     aspect = params.get("aspect_ratio", "16:9")
     model_id = user_video_model.get(chat_id, "bytedance/seedance-2.0")
+
     model_names = {
         "bytedance/seedance-2.0": "Seedance 2.0",
         "kwaivgi/kling-video-o1": "Kling O1",
-        "kwaivgi/kling-v3-pro": "Kling Pro",
+        "kwaivgi/kling-v3.0-pro": "Kling 3.0 Pro",
     }
     model_display = model_names.get(model_id, model_id)
     headers = _build_headers()
-    payload = {"model": model_id, "prompt": prompt, "duration": duration, "aspect_ratio": aspect}
+    payload = {"model": model_id, "duration": duration, "aspect_ratio": aspect}
+
+    if multi_prompt:
+        payload["multi_prompt"] = multi_prompt
+        model_display += " [Мультисцена]"
+    elif prompt:
+        payload["prompt"] = prompt
+
     features = VIDEO_MODEL_FEATURES.get(model_id, {})
     if features.get("resolution"):
         payload["resolution"] = resolution
     if features.get("audio"):
         payload["audio"] = audio
+
     frame_images = []
-    if first_frame_b64:
-        frame_images.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{compress_image_if_needed(first_frame_b64)}"}, "frame_type": "first_frame"})
-    if last_frame_b64:
-        frame_images.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{compress_image_if_needed(last_frame_b64)}"}, "frame_type": "last_frame"})
+    input_refs = []
+
+    if multi_photos_b64 and isinstance(multi_photos_b64, list):
+        for idx, b64 in enumerate(multi_photos_b64[:9]):
+            d_url = f"data:image/jpeg;base64,{compress_image_if_needed(b64)}"
+            f_type = "reference"
+            if idx == 0:
+                f_type = "first_frame"
+            elif idx == len(multi_photos_b64) - 1 and len(multi_photos_b64) > 1:
+                f_type = "last_frame"
+
+            frame_images.append({"type": "image_url", "image_url": {"url": d_url}, "frame_type": f_type})
+            input_refs.append({"type": "image_url", "image_url": {"url": d_url}})
+    else:
+        if first_frame_b64:
+            d_url = f"data:image/jpeg;base64,{compress_image_if_needed(first_frame_b64)}"
+            frame_images.append({"type": "image_url", "image_url": {"url": d_url}, "frame_type": "first_frame"})
+            input_refs.append({"type": "image_url", "image_url": {"url": d_url}})
+        if last_frame_b64:
+            d_url = f"data:image/jpeg;base64,{compress_image_if_needed(last_frame_b64)}"
+            frame_images.append({"type": "image_url", "image_url": {"url": d_url}, "frame_type": "last_frame"})
+            input_refs.append({"type": "image_url", "image_url": {"url": d_url}})
+
     if frame_images:
         payload["frame_images"] = frame_images
-    logging.info(f"Video payload: {json.dumps({k: v for k, v in payload.items() if k != 'frame_images'})}")
+        payload["input_references"] = input_refs
+
+    logging.info(f"Video payload: {json.dumps({k: v for k, v in payload.items() if k not in ('frame_images', 'input_references')}, ensure_ascii=False)}")
     try:
         resp = requests.post(OPENROUTER_VIDEO_URL, json=payload, headers=headers, timeout=60)
         if resp.status_code not in (200, 202):
@@ -699,11 +797,11 @@ def back_keyboard():
     return ReplyKeyboardMarkup(resize_keyboard=True).add(KeyboardButton("🔙 Главное меню"))
 
 def video_model_keyboard():
-    markup = InlineKeyboardMarkup(row_width=2)
+    markup = InlineKeyboardMarkup(row_width=1)
     markup.add(
         InlineKeyboardButton("🌱 Seedance 2.0", callback_data="vmodel_seedance-2.0"),
         InlineKeyboardButton("🎬 Kling O1", callback_data="vmodel_kling-o1"),
-        InlineKeyboardButton("🎥 Kling Pro", callback_data="vmodel_kling-pro"),
+        InlineKeyboardButton("🎥 Kling 3.0 Pro ($0.168/с)", callback_data="vmodel_kling-pro"),
     )
     return markup
 
@@ -764,7 +862,7 @@ def goto_shop(call):
     bot.delete_message(call.message.chat.id, call.message.message_id)
     shop(call.message)
 
-# ================== SHOP ==================
+# ================== SHOP & HELP ==================
 @bot.message_handler(func=lambda m: m.text == "💰 Магазин")
 def shop(message):
     chat_id = message.chat.id
@@ -774,7 +872,7 @@ def shop(message):
         " 🔷 за токены приобретается:\n"
         "• Генерация (Flux/Seedream) — 2 🔷\n"
         "• Редактирование фото (Flux/Seedream) — 3 🔷\n"
-        "• Видео 5 сек — 25 🔷, 10 сек — 50 🔷, 15 сек — 100 🔷\n"
+        "• Видеоролики (Seedance / Kling Pro) — 5 🔷 за 1 сек\n"
         "• Чат с ИИ-агентом — 1 🔷 за 50 сообщений\n\n"
         "Выберите пакет:"
     )
@@ -788,6 +886,38 @@ def shop(message):
             InlineKeyboardButton(f"{pkg['name']} 💳 {pkg['price_rub']}₽", callback_data=f"buy_card_{key}"),
         )
     bot.send_message(chat_id, "Оплата Stars (Telegram) или перевод на карту:", reply_markup=markup)
+
+@bot.message_handler(func=lambda m: m.text == "📖 Инструкция")
+def menu_help(message):
+    chat_id = message.chat.id
+    user_last_activity[chat_id] = time.time()
+    text = (
+        "📖 <b>Руководство пользователя NESPIM</b>\n\n"
+        "🤖 <b>1. Спросить (ИИ-Агент)</b>\n"
+        "Твой умный ассистент. Он помнит контекст диалога, умеет гуглить свежую информацию, читать ссылки и сам рисовать арты или снимать трейлеры по просьбе.\n"
+        "Команды агенту в чате:\n"
+        "• <i>«Забудь всё»</i> — очистить память разговора.\n"
+        "• <i>«Какой баланс?»</i> — проверить токены.\n"
+        "💎 <b>Цена:</b> 1 🔷 за пакет из 50 сообщений.\n\n"
+        "🖼 <b>2. Создать изображение</b>\n"
+        "Генерация картинок по тексту. Модели:\n"
+        "• <b>Flux Pro</b> — фотореализм и идеальные детали.\n"
+        "• <b>Seedream</b> — сочные цвета и арт-стили.\n"
+        "💎 <b>Цена:</b> 2 🔷 за картинку.\n\n"
+        "🎨 <b>3. Редактировать фото</b>\n"
+        "Изменение ваших фотографий по тексту.\n"
+        "• Режим <b>«Сохранить лицо»</b> — нейросеть поменяет фон и одежду, но оставит черты лица человека неизменными.\n"
+        "• Можно дорабатывать фото шаг за шагом по цепочке.\n"
+        "💎 <b>Цена:</b> 3 🔷 за обработку.\n\n"
+        "🎥 <b>4. Создать видео</b>\n"
+        "• <b>Обычное видео</b> — анимация картинок или ролик по тексту.\n"
+        "• <b>Мультисцена (Kling 3.0 Pro со звуком)</b> — эксклюзив! Вы описываете сюжет сразу из нескольких последовательных кадров и прикрепляете до 9 фото-референсов стиля, а нейросеть снимает полноценный мини-фильм.\n"
+        "💎 <b>Цена:</b> 5 🔷 за 1 секунду видео.\n\n"
+        "💰 <b>5. Баланс и покупки</b>\n"
+        "В «Профиле» виден остаток токенов. Пополнить баланс можно в «Магазине» за Telegram Stars ⭐️ мгновенно или переводом на карту.\n\n"
+        "💡 <i>Если бот застрял или ждет фото, а вы передумали — просто нажмите кнопку «🔙 Главное меню» или отправьте /start.</i>"
+    )
+    bot.send_message(chat_id, text, parse_mode="HTML")
 
 # --- STARS PAYMENT ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith("buy_stars_"))
@@ -974,7 +1104,7 @@ def start(message):
     chat_id = message.chat.id
     user_last_activity[chat_id] = time.time()
     user_state[chat_id] = None
-    send_main_menu(chat_id, "👋 Привет! Я умею генерировать изображения (Flux/Seedream), редактировать фото, создавать видео, а в режиме «Чат» работаю как полноценный ИИ-агент с доступом в интернет. Выбери действие ниже.")
+    send_main_menu(chat_id, "👋 Привет! Я умею генерировать изображения, редактировать фото, снимать кинематографичные видеоролики Kling 3.0, а в режиме «Чат» работаю как полноценный ИИ-агент. Выбери действие ниже.")
 
 def send_main_menu(chat_id, text="Главное меню:"):
     bot.send_message(chat_id, text, reply_markup=main_menu_keyboard())
@@ -1008,10 +1138,11 @@ def menu_video(message):
     chat_id = message.chat.id
     user_last_activity[chat_id] = time.time()
     user_state[chat_id] = "select_video_mode"
-    markup = InlineKeyboardMarkup(row_width=2)
+    markup = InlineKeyboardMarkup(row_width=1)
     markup.add(
-        InlineKeyboardButton("📝 Текст в видео", callback_data="vid_text"),
-        InlineKeyboardButton("🖼 Картинка в видео", callback_data="vid_image"),
+        InlineKeyboardButton("📝 Текст в видео (Обычное)", callback_data="vid_text"),
+        InlineKeyboardButton("🎬 Мультисцена (Сюжет Kling 3.0 + до 9 фото стиля)", callback_data="vid_multi"),
+        InlineKeyboardButton("🖼 Картинка в видео (Оживление фото)", callback_data="vid_image"),
     )
     bot.send_message(message.chat.id, "Выберите режим генерации видео:", reply_markup=markup)
 
@@ -1020,48 +1151,12 @@ def menu_chat(message):
     chat_id = message.chat.id
     user_last_activity[chat_id] = time.time()
     user_state[chat_id] = None
-    bot.send_message(message.chat.id, "🤖 Режим ИИ-агента активирован!\nЯ запоминаю контекст диалога, умею сам гуглить свежую информацию, переходить по ссылкам и рисовать арты (просто попроси «нарисуй...»). Каждые 50 сообщений списывается 1 🔷.", reply_markup=back_keyboard())
+    bot.send_message(message.chat.id, "🤖 Режим ИИ-агента активирован!\nЯ запоминаю контекст диалога, гуглю свежую информацию, читаю ссылки, рисую арты и снимаю мини-фильмы. Каждые 50 сообщений списывается 1 🔷.", reply_markup=back_keyboard())
 
 @bot.message_handler(func=lambda m: m.text == "👤 Профиль")
 def menu_profile(message):
     user_last_activity[message.chat.id] = time.time()
     profile(message)
-
-@bot.message_handler(func=lambda m: m.text == "💰 Магазин")
-def menu_shop(message):
-    user_last_activity[message.chat.id] = time.time()
-    shop(message)
-
-@bot.message_handler(func=lambda m: m.text == "📖 Инструкция")
-def menu_help(message):
-    chat_id = message.chat.id
-    user_last_activity[chat_id] = time.time()
-    text = (
-        "📖 <b>Руководство пользователя</b>\n\n"
-        "🤖 <b>1. Спросить (ИИ-Агент)</b>\n"
-        "Твой умный ассистент. Он помнит контекст диалога, умеет гуглить свежую информацию, переходить по ссылкам и рисовать арты по просьбе (просто напиши <i>«нарисуй киберпанк кота 1:1»</i>).\n"
-        "Команды агенту в чате:\n"
-        "• <i>«Забудь всё»</i> — очистить память разговора.\n"
-        "• <i>«Какой баланс?»</i> — проверить токены.\n"
-        "💎 <b>Цена:</b> 1 🔷 за пакет из 50 сообщений.\n\n"
-        "🖼 <b>2. Создать изображение</b>\n"
-        "Генерация картинок по тексту. Модели:\n"
-        "• <b>Flux Pro</b> — фотореализм и идеальные детали.\n"
-        "• <b>Seedream</b> — сочные цвета и арт-стили.\n"
-        "💎 <b>Цена:</b> 2 🔷 за картинку.\n\n"
-        "🎨 <b>3. Редактировать фото</b>\n"
-        "Изменение ваших фотографий по тексту.\n"
-        "• Режим <b>«Сохранить лицо»</b> — нейросеть поменяет фон и одежду, но оставит черты лица человека неизменными.\n"
-        "• Можно дорабатывать фото шаг за шагом по цепочке.\n"
-        "💎 <b>Цена:</b> 3 🔷 за обработку.\n\n"
-        "🎥 <b>4. Создать видео</b>\n"
-        "Генерация видеороликов из текста или по фото (модели Seedance 2.0, Kling Pro/O1).\n"
-        "💎 <b>Цена:</b> 5 сек — 25 🔷 | 10 сек — 50 🔷 | 15 сек — 100 🔷\n\n"
-        "💰 <b>5. Баланс и покупки</b>\n"
-        "В «Профиле» виден остаток токенов. Пополнить баланс можно в «Магазине» за Telegram Stars ⭐️ мгновенно или переводом на карту.\n\n"
-        "💡 <i>Если бот застрял или ждет фото, а вы передумали — просто нажмите кнопку «🔙 Главное меню» или отправьте /start.</i>"
-    )
-    bot.send_message(chat_id, text, parse_mode="HTML")
 
 @bot.message_handler(func=lambda m: m.text == "🔙 Главное меню")
 def back_to_main(message):
@@ -1092,7 +1187,7 @@ def set_video_model(call):
     model_map = {
         "seedance-2.0": "bytedance/seedance-2.0",
         "kling-o1": "kwaivgi/kling-video-o1",
-        "kling-pro": "kwaivgi/kling-v3-pro",
+        "kling-pro": "kwaivgi/kling-v3.0-pro",
     }
     if model_key in model_map:
         user_video_model[chat_id] = model_map[model_key]
@@ -1144,11 +1239,28 @@ def video_params_done(call):
     params.setdefault("audio", True)
     params.setdefault("aspect_ratio", "16:9")
     user_video_params[chat_id] = params
-    user_state[chat_id] = "awaiting_video_prompt"
-    bot.send_message(chat_id, "✏️ Теперь введите описание (промпт) для видео:", reply_markup=back_keyboard())
+
+    if user_video_mode.get(chat_id) == "multi":
+        user_state[chat_id] = "awaiting_video_multi_prompt"
+        bot.send_message(
+            chat_id,
+            "🎬 <b>Шаг 1 из 2: Сценарий (Kling 3.0 Pro)</b>\n\n"
+            "Опишите сюжет ролика по последовательным сценам. Каждую сцену пишите с новой строки в формате:\n"
+            "<code>[секунды] Описание действия в кадре</code>\n\n"
+            "📌 <b>Пример (общая сумма 10 сек):</b>\n"
+            "<code>3 Крупный план: рыцарь в сияющих доспехах смотрит на замок</code>\n"
+            "<code>4 Средний план: он достает меч из ножен под раскаты грома</code>\n"
+            "<code>3 Общий план: молния ударяет в главную башню замка</code>\n\n"
+            "✏️ <i>Введите ваш сценарий:</i>",
+            parse_mode="HTML",
+            reply_markup=back_keyboard()
+        )
+    else:
+        user_state[chat_id] = "awaiting_video_prompt"
+        bot.send_message(chat_id, "✏️ Теперь введите описание (промпт) для видео:", reply_markup=back_keyboard())
     bot.answer_callback_query(call.id)
 
-@bot.callback_query_handler(func=lambda call: call.data in ("vid_text", "vid_image"))
+@bot.callback_query_handler(func=lambda call: call.data in ("vid_text", "vid_image", "vid_multi"))
 def select_video_mode(call):
     chat_id = call.message.chat.id
     data = call.data
@@ -1157,6 +1269,12 @@ def select_video_mode(call):
         user_video_frames[chat_id] = {"first": None, "last": None}
         bot.delete_message(chat_id, call.message.message_id)
         bot.send_message(chat_id, "🎥 Выберите видеомодель:", reply_markup=video_model_keyboard())
+    elif data == "vid_multi":
+        user_video_mode[chat_id] = "multi"
+        user_video_model[chat_id] = "kwaivgi/kling-v3.0-pro"
+        user_video_frames[chat_id] = {"multi_list": []}
+        bot.delete_message(chat_id, call.message.message_id)
+        start_video_param_selection(chat_id)
     elif data == "vid_image":
         user_video_mode[chat_id] = "image_one"
         user_video_frames[chat_id] = {"first": None, "last": None}
@@ -1164,6 +1282,56 @@ def select_video_mode(call):
         bot.delete_message(chat_id, call.message.message_id)
         bot.send_message(chat_id, "📸 Загрузи ПЕРВЫЙ кадр (начальное изображение):", reply_markup=back_keyboard())
         bot.answer_callback_query(call.id)
+
+# --- MULTI-SCENE 9 PHOTOS HANDLERS ---
+def launch_multi_video_task(chat_id):
+    params = user_video_params.get(chat_id, {})
+    multi_prompt = params.get("multi_prompt_data", [])
+    photos = user_video_frames.get(chat_id, {}).get("multi_list", [])
+    logging.info(f"=== LAUNCH MULTI VIDEO {chat_id}: {len(photos)} ref images ===")
+    Thread(target=generate_video_async, args=(chat_id, None, None, None, multi_prompt, photos), daemon=True).start()
+
+@bot.callback_query_handler(func=lambda call: call.data == "run_multi_video")
+def run_multi_video_callback(call):
+    chat_id = call.message.chat.id
+    bot.delete_message(chat_id, call.message.message_id)
+    user_state[chat_id] = None
+    bot.send_message(chat_id, "🎬 Отлично! Передаю сценарий и фото в Kling 3.0 Pro...")
+    launch_multi_video_task(chat_id)
+    bot.answer_callback_query(call.id)
+
+@bot.message_handler(content_types=["photo"], func=lambda m: user_state.get(m.chat.id) == "awaiting_multi_photos")
+def handle_multi_photos_upload(message):
+    chat_id = message.chat.id
+    user_last_activity[chat_id] = time.time()
+
+    file_info = bot.get_file(message.photo[-1].file_id)
+    downloaded = bot.download_file(file_info.file_path)
+    b64 = base64.b64encode(downloaded).decode("utf-8")
+
+    if chat_id not in user_video_frames:
+        user_video_frames[chat_id] = {}
+    photos = user_video_frames[chat_id].get("multi_list", [])
+    if len(photos) < 9:
+        photos.append(b64)
+        user_video_frames[chat_id]["multi_list"] = photos
+
+    count = len(photos)
+    status_msg_id = user_video_params.get(chat_id, {}).get("multi_status_msg_id")
+
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton(f"▶️ Запустить генерацию (Загружено: {count}/9 фото)", callback_data="run_multi_video"))
+
+    if status_msg_id:
+        try:
+            bot.edit_message_reply_markup(chat_id, status_msg_id, reply_markup=markup)
+        except Exception:
+            pass
+
+    if count >= 9:
+        user_state[chat_id] = None
+        bot.send_message(chat_id, "✅ Загружен максимум (9 фото). Запускаю режиссерскую генерацию...")
+        launch_multi_video_task(chat_id)
 
 # --- GENERATION: model → aspect → prompt ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith("gen_"))
@@ -1466,7 +1634,7 @@ def handle_awaiting_prompt(message):
         bot.send_message(chat_id, "❌ Не удалось отредактировать изображение. 🔷 возвращены.")
         send_main_menu(chat_id)
 
-# ================== VIDEO PROMPT ==================
+# ================== VIDEO PROMPT HANDLERS ==================
 @bot.message_handler(func=lambda m: user_state.get(m.chat.id) == "awaiting_video_prompt")
 def handle_video_prompt(message):
     chat_id = message.chat.id
@@ -1479,6 +1647,57 @@ def handle_video_prompt(message):
     last_frame = user_video_frames.get(chat_id, {}).get("last")
     user_video_frames.pop(chat_id, None)
     Thread(target=generate_video_async, args=(chat_id, prompt, first_frame, last_frame), daemon=True).start()
+
+@bot.message_handler(func=lambda m: user_state.get(m.chat.id) == "awaiting_video_multi_prompt")
+def handle_video_multi_prompt(message):
+    chat_id = message.chat.id
+    user_last_activity[chat_id] = time.time()
+    raw_text = message.text
+
+    multi_prompt = []
+    total_dur = 0
+    lines = [line.strip() for line in raw_text.split("\n") if line.strip()]
+
+    for line in lines:
+        parts = line.split(maxsplit=1)
+        if len(parts) == 2 and parts[0].isdigit():
+            dur = int(parts[0])
+            multi_prompt.append({"prompt": parts[1], "duration": dur})
+            total_dur += dur
+        else:
+            multi_prompt.append({"prompt": line, "duration": 3})
+            total_dur += 3
+
+    if not multi_prompt:
+        bot.send_message(chat_id, "❌ Не удалось распознать сценарий. Попробуйте еще раз.")
+        send_main_menu(chat_id)
+        return
+
+    if chat_id not in user_video_params:
+        user_video_params[chat_id] = {}
+    user_video_params[chat_id]["duration"] = total_dur
+    user_video_params[chat_id]["multi_prompt_data"] = multi_prompt
+
+    if chat_id not in user_video_frames:
+        user_video_frames[chat_id] = {}
+    user_video_frames[chat_id]["multi_list"] = []
+    user_state[chat_id] = "awaiting_multi_photos"
+
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("▶️ Сгенерировать видео без фото", callback_data="run_multi_video"))
+
+    msg = bot.send_message(
+        chat_id,
+        "📸 <b>Шаг 2 из 2: Референсы стиля (от 0 до 9 фото)</b>\n\n"
+        "Прикрепите картинки, которые Kling 3.0 возьмет за визуальную основу:\n"
+        "• 1-е фото станет начальным кадром.\n"
+        "• Последнее фото — финальным кадром.\n"
+        "• Остальные фото зададут стиль персонажей и окружения.\n\n"
+        "<i>Отправляйте фото по одному или сразу альбомом из нескольких штук. Когда загрузите всё нужное — нажмите кнопку ниже:</i>",
+        parse_mode="HTML",
+        reply_markup=markup
+    )
+    user_video_params[chat_id]["multi_status_msg_id"] = msg.message_id
 
 # ================== CHAT (AGENT MODE) ==================
 @bot.message_handler(func=lambda m: True, content_types=["text"])
@@ -1497,8 +1716,8 @@ def handle_text_chat(message):
     state = user_state.get(chat_id)
     if state in [
         "awaiting_prompt", "awaiting_generate_prompt", "awaiting_photo",
-        "awaiting_video_prompt", "awaiting_video_image_first",
-        "awaiting_video_image_last", "awaiting_video_last_choice",
+        "awaiting_video_prompt", "awaiting_video_multi_prompt", "awaiting_multi_photos",
+        "awaiting_video_image_first", "awaiting_video_image_last", "awaiting_video_last_choice",
         "selecting_aspect", "select_model_edit", "select_model_generate",
     ]:
         return
