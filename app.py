@@ -8,13 +8,14 @@ import urllib3
 import json
 import logging
 import re
+import xml.etree.ElementTree as ET
 from html import escape, unescape
-from flask import Flask, request, send_from_directory
+from flask import Flask, request, send_from_directory, jsonify
 from threading import Thread, RLock
 from telebot.types import (
     ReplyKeyboardMarkup, KeyboardButton,
     InlineKeyboardMarkup, InlineKeyboardButton,
-    LabeledPrice
+    LabeledPrice, WebAppInfo
 )
 from PIL import Image
 import io
@@ -81,6 +82,264 @@ ASPECT_PROMPTS = {
     "1:1": "square 1:1 composition, Instagram post format, centered subject",
     "4:3": "standard 4:3 photo composition, classic portrait or landscape ratio",
 }
+
+# --- TELEGRAM WEB APP HTML TEMPLATE ---
+WEBAPP_HTML = """
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <title>Kling 3.0 Studio</title>
+    <style>
+        :root {
+            --bg-color: var(--tg-theme-bg-color, #18181b);
+            --text-color: var(--tg-theme-text-color, #ffffff);
+            --hint-color: var(--tg-theme-hint-color, #9ca3af);
+            --btn-color: var(--tg-theme-button-color, #3b82f6);
+            --btn-text: var(--tg-theme-button-text-color, #ffffff);
+            --sec-bg: var(--tg-theme-secondary-bg-color, #27272a);
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            padding: 16px;
+            padding-bottom: 90px;
+        }
+        .header { text-align: center; margin-bottom: 20px; }
+        .header h1 { font-size: 20px; margin: 0; font-weight: 700; }
+        .header p { font-size: 13px; color: var(--hint-color); margin: 4px 0 0 0; }
+        .card {
+            background: var(--sec-bg);
+            border-radius: 16px;
+            padding: 16px;
+            margin-bottom: 16px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+        .card-title { font-size: 15px; font-weight: 600; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
+        .aspect-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+        .aspect-btn {
+            background: rgba(255,255,255,0.05);
+            border: 2px solid transparent;
+            color: var(--text-color);
+            padding: 10px; border-radius: 12px; text-align: center; font-size: 13px; font-weight: 500; cursor: pointer; transition: all 0.2s;
+        }
+        .aspect-btn.active { border-color: var(--btn-color); background: rgba(59, 130, 246, 0.15); }
+        .scene-block { background: rgba(0,0,0,0.2); border-radius: 12px; padding: 14px; margin-bottom: 12px; }
+        .scene-head { display: flex; justify-content: space-between; align-items: center; font-size: 14px; font-weight: 600; margin-bottom: 8px; }
+        .scene-del { color: #ef4444; font-size: 12px; cursor: pointer; }
+        textarea {
+            width: 100%; box-sizing: border-box; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 10px; color: var(--text-color); padding: 10px; font-size: 14px; resize: none; height: 64px; outline: none;
+        }
+        textarea:focus { border-color: var(--btn-color); }
+        .dur-row { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; font-size: 13px; color: var(--hint-color); }
+        input[type="range"] { accent-color: var(--btn-color); width: 65%; }
+        .add-scene-btn { width: 100%; padding: 12px; background: rgba(255,255,255,0.08); border: none; border-radius: 12px; color: var(--text-color); font-weight: 600; font-size: 14px; cursor: pointer; }
+        .upload-zone { border: 2px dashed rgba(255,255,255,0.2); border-radius: 12px; padding: 20px; text-align: center; cursor: pointer; margin-bottom: 12px; }
+        .thumbs-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+        .thumb-item { position: relative; aspect-ratio: 1; border-radius: 8px; overflow: hidden; background: #000; }
+        .thumb-item img { width: 100%; height: 100%; object-fit: cover; }
+        .thumb-del {
+            position: absolute; top: 2px; right: 2px; background: rgba(0,0,0,0.7); color: #fff; border-radius: 50%;
+            width: 18px; height: 18px; font-size: 12px; display: flex; align-items: center; justify-content: center; cursor: pointer;
+        }
+        .main-btn {
+            position: fixed; bottom: 16px; left: 16px; right: 16px; background: var(--btn-color); color: var(--btn-text);
+            border: none; padding: 16px; border-radius: 14px; font-size: 16px; font-weight: 700; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.3); cursor: pointer; text-align: center;
+        }
+        .main-btn:disabled { opacity: 0.5; }
+    </style>
+</head>
+<body>
+
+<div class="header">
+    <h1>✨ Kling 3.0 Studio</h1>
+    <p>Режиссерский конструктор многосценового видео</p>
+</div>
+
+<div class="card">
+    <div class="card-title">Соотношение сторон кадра</div>
+    <div class="aspect-grid">
+        <div class="aspect-btn active" onclick="setAspect('16:9', this)">🖥 16:9</div>
+        <div class="aspect-btn" onclick="setAspect('9:16', this)">📱 9:16</div>
+        <div class="aspect-btn" onclick="setAspect('1:1', this)">⬜ 1:1</div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-title">
+        <span>Сценарий по кадрам</span>
+        <span style="font-size:13px; color:var(--btn-color)" id="totalSec">Итого: 3с (15 🔷)</span>
+    </div>
+    <div id="scenesContainer"></div>
+    <button class="add-scene-btn" onclick="addScene()" id="addBtn">+ Добавить кадр (сцену)</button>
+</div>
+
+<div class="card">
+    <div class="card-title">
+        <span>Опорные референсы стиля</span>
+        <span style="font-size:12px; color:var(--hint-color)"><span id="photoCount">0</span>/9 фото</span>
+    </div>
+    <div class="upload-zone" onclick="document.getElementById('fileIn').click()">
+        <div style="font-size:24px">📸</div>
+        <div style="font-size:13px; margin-top:4px">Нажмите для выбора изображений</div>
+        <div style="font-size:11px; color:var(--hint-color); margin-top:2px">1-е старт видео, финальное конец, остальные персонажи/стиль</div>
+    </div>
+    <input type="file" id="fileIn" multiple accept="image/*" style="display:none" onchange="handleFiles(this.files)">
+    <div class="thumbs-grid" id="thumbsGrid"></div>
+</div>
+
+<button class="main-btn" id="submitBtn" onclick="submitVideo()">🚀 Запустить рендер (15 🔷)</button>
+
+<script>
+    const tg = window.Telegram.WebApp;
+    tg.ready();
+    tg.expand();
+
+    let currentAspect = '16:9';
+    let scenes = [{ prompt: '', dur: 3 }];
+    let photosB64 = [];
+
+    function renderScenes() {
+        const cont = document.getElementById('scenesContainer');
+        cont.innerHTML = '';
+        scenes.forEach((sc, idx) => {
+            cont.innerHTML += `
+                <div class="scene-block">
+                    <div class="scene-head">
+                        <span>Кадр ${idx + 1}</span>
+                        ${scenes.length > 1 ? `<span class="scene-del" onclick="delScene(${idx})">Удалить</span>` : ''}
+                    </div>
+                    <textarea placeholder="Что происходит в кадре..." oninput="scenes[${idx}].prompt = this.value">${sc.prompt}</textarea>
+                    <div class="dur-row">
+                        <span>Длительность:</span>
+                        <input type="range" min="2" max="6" value="${sc.dur}" oninput="scenes[${idx}].dur = parseInt(this.value); updateSummary()">
+                        <strong style="color:var(--text-color)">${sc.dur}с</strong>
+                    </div>
+                </div>
+            `;
+        });
+        document.getElementById('addBtn').style.display = scenes.length >= 5 ? 'none' : 'block';
+        updateSummary();
+    }
+
+    function addScene() {
+        if (scenes.length < 5) {
+            scenes.push({ prompt: '', dur: 3 });
+            renderScenes();
+        }
+    }
+
+    function delScene(idx) {
+        scenes.splice(idx, 1);
+        renderScenes();
+    }
+
+    function setAspect(asp, el) {
+        currentAspect = asp;
+        document.querySelectorAll('.aspect-btn').forEach(b => b.classList.remove('active'));
+        el.classList.add('active');
+    }
+
+    function updateSummary() {
+        const tot = scenes.reduce((a, b) => a + b.dur, 0);
+        const cost = tot * 5;
+        document.getElementById('totalSec').innerText = `Итого: ${tot}с (${cost} 🔷)`;
+        document.getElementById('submitBtn').innerText = `🚀 Запустить рендер (${cost} 🔷)`;
+    }
+
+    function compressImg(file) {
+        return new Promise(res => {
+            const r = new FileReader();
+            r.onload = e => {
+                const img = new Image();
+                img.onload = () => {
+                    const cvs = document.createElement('canvas');
+                    let w = img.width, h = img.height, max = 800;
+                    if (w > h && w > max) { h *= max / w; w = max; }
+                    else if (h > max) { w *= max / h; h = max; }
+                    cvs.width = w; cvs.height = h;
+                    cvs.getContext('2d').drawImage(img, 0, 0, w, h);
+                    res(cvs.toDataURL('image/jpeg', 0.8).split(',')[1]);
+                };
+                img.src = e.target.result;
+            };
+            r.readAsDataURL(file);
+        });
+    }
+
+    async function handleFiles(files) {
+        for (let f of files) {
+            if (photosB64.length < 9) {
+                const b64 = await compressImg(f);
+                photosB64.push(b64);
+            }
+        }
+        renderThumbs();
+    }
+
+    function renderThumbs() {
+        const grid = document.getElementById('thumbsGrid');
+        grid.innerHTML = '';
+        photosB64.forEach((b64, i) => {
+            grid.innerHTML += `
+                <div class="thumb-item">
+                    <img src="data:image/jpeg;base64,${b64}">
+                    <div class="thumb-del" onclick="photosB64.splice(${i},1); renderThumbs()">✕</div>
+                </div>
+            `;
+        });
+        document.getElementById('photoCount').innerText = photosB64.length;
+    }
+
+    async function submitVideo() {
+        const valid = scenes.every(s => s.prompt.trim().length > 0);
+        if (!valid) {
+            tg.showAlert('Пожалуйста, заполните описание действия для каждой сцены!');
+            return;
+        }
+
+        const btn = document.getElementById('submitBtn');
+        btn.disabled = true;
+        btn.innerText = '⏳ Отправка в студию...';
+
+        const payload = {
+            user_id: tg.initDataUnsafe?.user?.id || 0,
+            scenes: scenes.map(s => ({ prompt: s.prompt, duration: s.dur })),
+            aspect_ratio: currentAspect,
+            photos: photosB64
+        };
+
+        try {
+            const r = await fetch('/api/webapp_submit_video', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const res = await r.json();
+            if (res.ok) {
+                tg.close();
+            } else {
+                tg.showAlert('Ошибка: ' + (res.error || 'Не удалось создать видео'));
+                btn.disabled = false;
+                updateSummary();
+            }
+        } catch (e) {
+            tg.showAlert('Ошибка связи с сервером бота');
+            btn.disabled = false;
+            updateSummary();
+        }
+    }
+
+    renderScenes();
+</script>
+</body>
+</html>
+"""
 
 # --- GIST SYNC ---
 def load_data():
@@ -207,15 +466,29 @@ def _build_headers():
 # ================== AGENT TOOLS HELPERS ==================
 def helper_web_search(query):
     try:
-        url = "https://lite.duckduckgo.com/lite/"
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-        r = requests.post(url, data={"q": query}, headers=headers, timeout=10)
-        text = unescape(r.text)
-        snippets = re.findall(r'<td class=[\x27"]result-snippet[\x27"]>(.*?)</td>', text, re.DOTALL)
-        clean = [re.sub(r'<.*?>', '', s).strip() for s in snippets[:4]]
-        return clean if clean else ["По запросу ничего не найдено в поисковике."]
+        items = []
+        # Шаг 1: Быстрая проверка Google News RSS (0.3 сек, без капч)
+        rss_url = f"https://news.google.com/rss/search?q={query}&hl=ru&gl=RU&ceid=RU:ru"
+        r = requests.get(rss_url, timeout=5)
+        if r.status_code == 200:
+            root = ET.fromstring(r.content)
+            for item in root.findall(".//item")[:3]:
+                title = item.find("title").text if item.find("title") is not None else ""
+                items.append(f"Новость: {title}")
+
+        # Шаг 2: Дополняем поиском DuckDuckGo Lite
+        if len(items) < 3:
+            url = "https://lite.duckduckgo.com/lite/"
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+            dr = requests.post(url, data={"q": query}, headers=headers, timeout=6)
+            text = unescape(dr.text)
+            snippets = re.findall(r'<td class=[\x27"]result-snippet[\x27"]>(.*?)</td>', text, re.DOTALL)
+            clean = [re.sub(r'<.*?>', '', s).strip() for s in snippets[:3]]
+            items.extend(clean)
+
+        return items if items else ["Актуальных данных по этому запросу в поисковике не обнаружено."]
     except Exception as e:
-        return [f"Ошибка веб-поиска: {e}"]
+        return [f"Справка поиска: {e}"]
 
 def helper_fetch_webpage(url):
     try:
@@ -235,11 +508,11 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "web_search",
-            "description": "Поиск актуальных новостей, фактов, документации или информации в интернете Google/DuckDuckGo",
+            "description": "Поиск актуальных новостей, фактов, документации или информации в интернете",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Поисковый запрос"}
+                    "query": {"type": "string", "description": "Точный поисковый запрос на русском или английском"}
                 },
                 "required": ["query"]
             }
@@ -278,7 +551,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "generate_multiscene_video",
-            "description": "Снять кинематографичный многосценовый видеоролик с единым сюжетом (модель Kling 3.0 Pro со звуком). Списывает 5 токенов 🔷 за 1 секунду видео.",
+            "description": "Снять кинематографичный многосценовый видеоролик Kling 3.0 Pro со звуком (5 🔷/сек).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -287,18 +560,14 @@ AGENT_TOOLS = [
                         "items": {
                             "type": "object",
                             "properties": {
-                                "prompt": {"type": "string", "description": "Детальное описание действия в кадре"},
-                                "duration": {"type": "integer", "description": "Длительность кадра в секундах (от 2 до 6)"}
+                                "prompt": {"type": "string", "description": "Описание действия в конкретном кадре"},
+                                "duration": {"type": "integer", "description": "Секунды (от 2 до 6)"}
                             },
                             "required": ["prompt", "duration"]
-                        },
-                        "description": "Список последовательных сцен видеоролика"
+                        }
                     },
-                    "aspect_ratio": {"type": "string", "enum": ["16:9", "9:16", "1:1"], "description": "Формат кадра"},
-                    "confirmed_by_user": {
-                        "type": "boolean",
-                        "description": "True ТОЛЬКО если в своем ПОСЛЕДНЕМ сообщении пользователь прямо написал 'Да / Создавай / Запускай видео' на предложенный вами сценарий. Если пользователь впервые попросил придумать видео — ставь False!"
-                    }
+                    "aspect_ratio": {"type": "string", "enum": ["16:9", "9:16", "1:1"]},
+                    "confirmed_by_user": {"type": "boolean"}
                 },
                 "required": ["scenes", "aspect_ratio", "confirmed_by_user"]
             }
@@ -308,7 +577,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "get_my_balance",
-            "description": "Проверить текущий баланс токенов 🔷 пользователя и остаток сообщений в пакете чата",
+            "description": "Проверить текущий баланс токенов 🔷 пользователя",
             "parameters": {"type": "object", "properties": {}}
         }
     },
@@ -316,7 +585,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "clear_memory",
-            "description": "Очистить память диалога с пользователем (когда просят забыть контекст)",
+            "description": "Очистить память диалога с пользователем",
             "parameters": {"type": "object", "properties": {}}
         }
     }
@@ -325,12 +594,11 @@ AGENT_TOOLS = [
 # ================== DEEPSEEK AGENT CORE ==================
 def ask_deepseek(prompt):
     headers = _build_headers()
-    payload = {"model": "deepseek/deepseek-v4-pro", "messages": [{"role": "user", "content": prompt}]}
+    payload = {"model": "deepseek/deepseek-chat", "messages": [{"role": "user", "content": prompt}]}
     try:
         r = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=90)
         if r.status_code == 200:
             return r.json()["choices"][0]["message"]["content"]
-        logging.error(f"DeepSeek error {r.status_code}: {r.text[:200]}")
     except Exception as e:
         logging.error(f"DeepSeek exception: {e}")
     return "⚠️ Ошибка соединения"
@@ -341,37 +609,40 @@ def run_agent(chat_id, user_text):
         history = history[-18:]
 
     system_prompt = (
-        "Ты — персональный ИИ-агент и кинорежиссер в Telegram. Ты умный, вежливый, инициативный.\n"
+        "Ты — персональный ИИ-агент и кинорежиссер NESPIM в Telegram. Ты умный, вежливый, инициативный.\n"
         "Твои возможности (инструменты):\n"
-        "1. web_search — гуглить в интернете факты, новости, документацию.\n"
-        "2. fetch_webpage — читать ссылки, присланные пользователем.\n"
-        "3. generate_image — генерировать арты/картинки (нейросеть Flux Pro, стоит 2 🔷).\n"
-        "4. generate_multiscene_video — снимать многосценовые видео Kling 3.0 Pro (5 🔷/сек).\n"
-        "5. get_my_balance — проверять баланс токенов 🔷 пользователя.\n"
-        "6. clear_memory — очищать историю текущей беседы.\n\n"
-        "ВАЖНЕЙШИЕ ПРАВИЛА БЕЗОПАСНОСТИ ТРАТ:\n"
-        "- КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО вызывать функцию generate_multiscene_video без явного согласия пользователя!\n"
-        "  Когда юзер просит видеоролик или трейлер:\n"
-        "  1) Сначала составь и напиши ему красивый покадровый сценарий с секундами.\n"
-        "  2) Посчитай и укажи точную стоимость рендера (5 🔷 за 1 секунду видео).\n"
-        "  3) ОБЯЗАТЕЛЬНО задай вопрос: «Создаем видео по этому сценарию? Стоимость ХХ 🔷».\n"
-        "  4) Вызывай generate_multiscene_video с confirmed_by_user=True ТОЛЬКО тогда, когда юзер ответит «Да / Создавай / Запускай».\n"
-        "- Если юзер просит просто нарисовать арт/картинку — НЕ описывай её словами, а СРАЗУ вызывай generate_image.\n"
-        "- Если юзер кидает ссылку — прочти её через fetch_webpage перед ответом.\n"
-        "- Отвечай понятно, емко, на языке собеседника (обычно русский)."
+        "1. web_search — гуглить в интернете новости, факты, справку.\n"
+        "2. fetch_webpage — читать ссылки юзера.\n"
+        "3. generate_image — генерировать арты (Flux Pro, стоит 2 🔷).\n"
+        "4. generate_multiscene_video — снимать видео Kling 3.0 Pro (5 🔷/сек).\n"
+        "5. get_my_balance — проверять баланс юзера.\n"
+        "6. clear_memory — очищать память беседы.\n\n"
+        "ВАЖНЕЙШИЕ ПРАВИЛА СКОРОСТИ И ПОИСКА:\n"
+        "- Делай СТРОГО НЕ БОЛЕЕ ОДНОГО вызова web_search за весь ответ! Получив данные поиска, сразу формируй финальный ответ юзеру. Запрещено перебирать поисковые запросы повторно.\n"
+        "- Если юзер прислал ссылку — вызови fetch_webpage ровно один раз.\n\n"
+        "ПРАВИЛА ТРАТ НА ВИДЕО:\n"
+        "- КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО вызывать generate_multiscene_video без предварительного согласия юзера!\n"
+        "  Когда юзер просит видеоролик:\n"
+        "  1) Предложи красивый покадровый сценарий с секундами.\n"
+        "  2) Посчитай стоимость рендера (5 🔷 за 1 сек).\n"
+        "  3) ОБЯЗАТЕЛЬНО спроси: «Создаем видео? Стоимость ХХ 🔷».\n"
+        "  4) ТОЛЬКО получив утвердительный ответ («Да/Создавай») — вызывай функцию с confirmed_by_user=True.\n"
+        "- Если юзер просит просто нарисовать арт/картинку — СРАЗУ вызывай generate_image.\n"
+        "- Отвечай понятно, емко, на русском языке."
     )
 
     messages = [{"role": "system", "content": system_prompt}] + history + [{"role": "user", "content": user_text}]
     headers = _build_headers()
 
-    for turn in range(5):
+    for turn in range(4):
+        # ИСПРАВЛЕНО: переключено на deepseek-chat (V3) для 3-кратного ускорения и стабильности инструментов
         payload = {
-            "model": "deepseek/deepseek-v4-pro",
+            "model": "deepseek/deepseek-chat",
             "messages": messages,
             "tools": AGENT_TOOLS
         }
         try:
-            r = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=90)
+            r = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=60)
             if r.status_code != 200:
                 logging.error(f"[AGENT ERROR] {r.status_code}: {r.text[:300]}")
                 return "⚠️ Ошибка связи с нейросетью."
@@ -484,7 +755,7 @@ def run_agent(chat_id, user_text):
             logging.error(f"[AGENT EXCEPTION] {e}")
             return "⚠️ Произошла ошибка при работе ИИ-агента."
 
-    return "⚠️ Агент превысил лимит шагов рассуждения."
+    return "⚠️ Поиск не дал однозначного результата."
 
 # ================== IMAGE HELPERS ==================
 def _safe_resample():
@@ -911,7 +1182,7 @@ def menu_help(message):
         "💎 <b>Цена:</b> 3 🔷 за обработку.\n\n"
         "🎥 <b>4. Создать видео</b>\n"
         "• <b>Обычное видео</b> — анимация картинок или ролик по тексту.\n"
-        "• <b>Мультисцена (Kling 3.0 Pro со звуком)</b> — эксклюзив! Вы описываете сюжет сразу из нескольких последовательных кадров и прикрепляете до 9 фото-референсов стиля, а нейросеть снимает полноценный мини-фильм.\n"
+        "• <b>Визуальная Студия Kling 3.0 (Web App)</b> — супер-конструктор! Откройте удобное мини-приложение с ползунками секунд и галереей загрузки до 9 фото.\n"
         "💎 <b>Цена:</b> 5 🔷 за 1 секунду видео.\n\n"
         "💰 <b>5. Баланс и покупки</b>\n"
         "В «Профиле» виден остаток токенов. Пополнить баланс можно в «Магазине» за Telegram Stars ⭐️ мгновенно или переводом на карту.\n\n"
@@ -1104,7 +1375,7 @@ def start(message):
     chat_id = message.chat.id
     user_last_activity[chat_id] = time.time()
     user_state[chat_id] = None
-    send_main_menu(chat_id, "👋 Привет! Я умею генерировать изображения, редактировать фото, снимать кинематографичные видеоролики Kling 3.0, а в режиме «Чат» работаю как полноценный ИИ-агент. Выбери действие ниже.")
+    send_main_menu(chat_id, "👋 Привет! Я умею генерировать изображения, редактировать фото, снимать мини-фильмы Kling 3.0 в удобной Web-Студии, а в режиме «Чат» работаю как полноценный ИИ-агент. Выбери действие ниже.")
 
 def send_main_menu(chat_id, text="Главное меню:"):
     bot.send_message(chat_id, text, reply_markup=main_menu_keyboard())
@@ -1138,20 +1409,26 @@ def menu_video(message):
     chat_id = message.chat.id
     user_last_activity[chat_id] = time.time()
     user_state[chat_id] = "select_video_mode"
+
+    host = os.getenv("RENDER_EXTERNAL_HOSTNAME") or os.getenv("WEBHOOK_HOST")
+    studio_url = f"https://{host}/studio" if host else ""
+
     markup = InlineKeyboardMarkup(row_width=1)
+    if studio_url:
+        markup.add(InlineKeyboardButton("✨ Kling 3.0 Видео-Студия [Визуальный Web App]", web_app=WebAppInfo(url=studio_url)))
     markup.add(
-        InlineKeyboardButton("📝 Текст в видео (Обычное)", callback_data="vid_text"),
-        InlineKeyboardButton("🎬 Мультисцена (Сюжет Kling 3.0 + до 9 фото стиля)", callback_data="vid_multi"),
+        InlineKeyboardButton("📝 Текст в видео (Обычный промпт)", callback_data="vid_text"),
+        InlineKeyboardButton("🎬 Мультисцена через диалог бота", callback_data="vid_multi"),
         InlineKeyboardButton("🖼 Картинка в видео (Оживление фото)", callback_data="vid_image"),
     )
-    bot.send_message(message.chat.id, "Выберите режим генерации видео:", reply_markup=markup)
+    bot.send_message(message.chat.id, "Выберите инструмент генерации видео:", reply_markup=markup)
 
 @bot.message_handler(func=lambda m: m.text == "💬 Спросить (чат)")
 def menu_chat(message):
     chat_id = message.chat.id
     user_last_activity[chat_id] = time.time()
     user_state[chat_id] = None
-    bot.send_message(message.chat.id, "🤖 Режим ИИ-агента активирован!\nЯ запоминаю контекст диалога, гуглю свежую информацию, читаю ссылки, рисую арты и снимаю мини-фильмы. Каждые 50 сообщений списывается 1 🔷.", reply_markup=back_keyboard())
+    bot.send_message(message.chat.id, "🤖 Режим ИИ-агента активирован!\nЯ помню контекст диалога, гуглю информацию, читаю ссылки, рисую арты и снимаю мини-фильмы. Каждые 50 сообщений списывается 1 🔷.", reply_markup=back_keyboard())
 
 @bot.message_handler(func=lambda m: m.text == "👤 Профиль")
 def menu_profile(message):
@@ -1333,307 +1610,6 @@ def handle_multi_photos_upload(message):
         bot.send_message(chat_id, "✅ Загружен максимум (9 фото). Запускаю режиссерскую генерацию...")
         launch_multi_video_task(chat_id)
 
-# --- GENERATION: model → aspect → prompt ---
-@bot.callback_query_handler(func=lambda call: call.data.startswith("gen_"))
-def select_generate_model(call):
-    chat_id = call.message.chat.id
-    data = call.data
-    if data == "gen_flux":
-        user_generate_model[chat_id] = "flux"
-    elif data == "gen_seedream":
-        user_generate_model[chat_id] = "seedream"
-    bot.answer_callback_query(call.id, f"Выбрана модель: {data}")
-    bot.delete_message(chat_id, call.message.message_id)
-    user_state[chat_id] = "selecting_aspect"
-    markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        InlineKeyboardButton("📱 9:16 (сторис/телефон)", callback_data="aspect_9_16"),
-        InlineKeyboardButton("🖥 16:9 (широкий)", callback_data="aspect_16_9"),
-        InlineKeyboardButton("⬜ 1:1 (квадрат/инста)", callback_data="aspect_1_1"),
-        InlineKeyboardButton("📷 4:3 (фото)", callback_data="aspect_4_3"),
-    )
-    bot.send_message(chat_id, "Выберите формат изображения:", reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("aspect_"))
-def set_aspect(call):
-    chat_id = call.message.chat.id
-    aspect = call.data.split("_")[1] + ":" + call.data.split("_")[2]
-    user_generate_aspect[chat_id] = aspect
-    bot.delete_message(chat_id, call.message.message_id)
-    user_state[chat_id] = "awaiting_generate_prompt"
-    bot.send_message(chat_id, f"Формат: {aspect}. Введите описание изображения:", reply_markup=back_keyboard())
-    bot.answer_callback_query(call.id, f"Формат {aspect}")
-
-# --- EDITING: model → aspect → face → photo ---
-@bot.callback_query_handler(func=lambda call: call.data in ("edit_flux", "edit_seedream"))
-def select_edit_model(call):
-    chat_id = call.message.chat.id
-    data = call.data
-    if data == "edit_flux":
-        user_edit_model[chat_id] = "flux"
-    elif data == "edit_seedream":
-        user_edit_model[chat_id] = "seedream"
-    bot.answer_callback_query(call.id, f"Выбрана модель: {data}")
-    bot.delete_message(chat_id, call.message.message_id)
-    markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        InlineKeyboardButton("📱 9:16 (сторис)", callback_data="edit_aspect_9_16"),
-        InlineKeyboardButton("🖥 16:9 (широкий)", callback_data="edit_aspect_16_9"),
-        InlineKeyboardButton("⬜ 1:1 (квадрат)", callback_data="edit_aspect_1_1"),
-        InlineKeyboardButton("📷 4:3 (фото)", callback_data="edit_aspect_4_3"),
-    )
-    bot.send_message(chat_id, "Выберите формат итогового изображения:", reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("edit_aspect_"))
-def set_edit_aspect(call):
-    chat_id = call.message.chat.id
-    parts = call.data.split("_")
-    aspect = parts[2] + ":" + parts[3]
-    user_edit_aspect[chat_id] = aspect
-    bot.answer_callback_query(call.id, f"Формат: {aspect}")
-    bot.delete_message(chat_id, call.message.message_id)
-    markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        InlineKeyboardButton("🔒 Сохранить лицо", callback_data="face_keep"),
-        InlineKeyboardButton("🎨 Полное редактирование", callback_data="face_full"),
-    )
-    bot.send_message(chat_id, "Как обрабатывать лицо на фото?", reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("face_"))
-def select_face_mode(call):
-    chat_id = call.message.chat.id
-    if call.data == "face_keep":
-        user_face_mode[chat_id] = "keep_face"
-    else:
-        user_face_mode[chat_id] = "full_edit"
-    bot.answer_callback_query(call.id, "Режим сохранён")
-    bot.delete_message(chat_id, call.message.message_id)
-    user_state[chat_id] = "awaiting_photo"
-    bot.send_message(chat_id, "📸 Загрузи фото, которое нужно отредактировать.", reply_markup=back_keyboard())
-
-# --- CHAIN EDIT callbacks ---
-@bot.callback_query_handler(func=lambda call: call.data == "edit_again")
-def edit_again(call):
-    chat_id = call.message.chat.id
-    if chat_id not in user_last_image:
-        bot.answer_callback_query(call.id, "Нет сохранённого фото")
-        return
-
-    user_pending_photo[chat_id] = user_last_image[chat_id]
-    user_edit_model[chat_id] = user_last_edit_model.get(chat_id, "flux")
-    user_face_mode[chat_id] = user_last_face_mode.get(chat_id, "full_edit")
-    user_edit_aspect[chat_id] = user_last_edit_aspect.get(chat_id, "16:9")
-    user_state[chat_id] = "awaiting_prompt"
-
-    logging.info(f"[EDIT AGAIN] chat_id={chat_id}, model={user_edit_model[chat_id]}, "
-                 f"face={user_face_mode[chat_id]}, aspect={user_edit_aspect[chat_id]}")
-
-    bot.send_message(chat_id, "✏️ Введите новый промпт для доработки этого фото:", reply_markup=back_keyboard())
-    bot.answer_callback_query(call.id, "Готово к редактированию")
-
-@bot.callback_query_handler(func=lambda call: call.data == "goto_main")
-def goto_main_handler(call):
-    chat_id = call.message.chat.id
-    for d in [user_state, user_edit_model, user_face_mode, user_generate_model,
-              user_generate_aspect, user_pending_photo, user_last_image,
-              user_last_edit_model, user_last_face_mode, user_last_edit_aspect,
-              user_edit_aspect, user_video_frames, user_video_params,
-              user_video_model, user_video_mode]:
-        d.pop(chat_id, None)
-    bot.delete_message(chat_id, call.message.message_id)
-    send_main_menu(chat_id)
-    bot.answer_callback_query(call.id, "Главное меню")
-
-@bot.message_handler(content_types=["photo"], func=lambda m: user_state.get(m.chat.id) == "awaiting_video_image_first")
-def handle_video_first_frame(message):
-    chat_id = message.chat.id
-    user_last_activity[chat_id] = time.time()
-    file_info = bot.get_file(message.photo[-1].file_id)
-    downloaded = bot.download_file(file_info.file_path)
-    b64 = base64.b64encode(downloaded).decode("utf-8")
-    user_video_frames[chat_id]["first"] = b64
-    user_state[chat_id] = "awaiting_video_last_choice"
-    markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        InlineKeyboardButton("Да, загрузить второй кадр", callback_data="last_yes"),
-        InlineKeyboardButton("Нет, только первый", callback_data="last_no"),
-    )
-    bot.send_message(chat_id, "Хотите задать ПОСЛЕДНИЙ кадр (конечное изображение)?", reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("last_"))
-def choose_last_frame(call):
-    chat_id = call.message.chat.id
-    bot.delete_message(chat_id, call.message.message_id)
-    if call.data == "last_yes":
-        user_state[chat_id] = "awaiting_video_image_last"
-        bot.send_message(chat_id, "📸 Загрузи ПОСЛЕДНИЙ кадр:", reply_markup=back_keyboard())
-    else:
-        user_state[chat_id] = None
-        bot.send_message(chat_id, "🎥 Выберите видеомодель:", reply_markup=video_model_keyboard())
-    bot.answer_callback_query(call.id)
-
-@bot.message_handler(content_types=["photo"], func=lambda m: user_state.get(m.chat.id) == "awaiting_video_image_last")
-def handle_video_last_frame(message):
-    chat_id = message.chat.id
-    user_last_activity[chat_id] = time.time()
-    file_info = bot.get_file(message.photo[-1].file_id)
-    downloaded = bot.download_file(file_info.file_path)
-    b64 = base64.b64encode(downloaded).decode("utf-8")
-    user_video_frames[chat_id]["last"] = b64
-    user_state[chat_id] = None
-    bot.send_message(chat_id, "🎥 Выберите видеомодель:", reply_markup=video_model_keyboard())
-
-# ================== IMAGE GENERATION ==================
-@bot.message_handler(func=lambda m: user_state.get(m.chat.id) == "awaiting_generate_prompt")
-def handle_generate_prompt(message):
-    chat_id = message.chat.id
-    user_last_activity[chat_id] = time.time()
-    prompt = message.text
-    model = user_generate_model.pop(chat_id, "flux")
-    aspect = user_generate_aspect.pop(chat_id, "16:9")
-    user_state[chat_id] = None
-    cost = CREDIT_COSTS["image_pro"]
-
-    aspect_hint = ASPECT_PROMPTS.get(aspect, "")
-    full_prompt = f"{prompt}. {aspect_hint}" if aspect_hint else prompt
-
-    with data_lock:
-        if chat_id != ADMIN_ID:
-            if user_credits.get(chat_id, 0) < cost:
-                bot.send_message(chat_id, f"❌ Недостаточно 🔷. Нужно {cost} 🔷.")
-                send_main_menu(chat_id)
-                return
-            user_credits[chat_id] -= cost
-            user_credit_history[chat_id].append((time.time(), -cost, f"Генерация {model} {aspect}"))
-            save_data()
-        bot.send_message(chat_id, f"✅ Списано {cost} 🔷. Осталось: {user_credits[chat_id]}")
-    bot.send_message(chat_id, f"🎨 Генерирую через {model} ({aspect})...")
-    if model == "flux":
-        img_data = generate_image_flux(full_prompt)
-    else:
-        img_data = generate_image_seedream(full_prompt)
-    if img_data:
-        output, err = _prepare_image_bytes(img_data)
-        if err:
-            logging.error(f"Image prepare error: {err}")
-            output = img_data
-        try:
-            bot.send_photo(chat_id, output, caption=f"✅ Готово! ({aspect})")
-        except Exception as e:
-            logging.error(f"Image send error: {e}")
-            bot.send_document(chat_id, img_data, caption=f"✅ Готово (файл) ({aspect})")
-    else:
-        with data_lock:
-            if chat_id != ADMIN_ID:
-                user_credits[chat_id] += cost
-                user_credit_history[chat_id].append((time.time(), cost, f"Возврат за генерацию {model}"))
-                save_data()
-        bot.send_message(chat_id, f"❌ Ошибка генерации. {cost} 🔷 возвращены.")
-        bot.send_message(chat_id, "❌ Не удалось сгенерировать изображение.")
-    send_main_menu(chat_id)
-
-# ================== IMAGE EDITING ==================
-@bot.message_handler(content_types=["photo"], func=lambda m: user_state.get(m.chat.id) == "awaiting_photo")
-def handle_awaiting_photo(message):
-    chat_id = message.chat.id
-    user_last_activity[chat_id] = time.time()
-    user_state[chat_id] = "awaiting_prompt"
-    file_info = bot.get_file(message.photo[-1].file_id)
-    downloaded = bot.download_file(file_info.file_path)
-    user_pending_photo[chat_id] = base64.b64encode(downloaded).decode("utf-8")
-    bot.send_message(chat_id, "✏️ Теперь напиши, что изменить (промт):", reply_markup=back_keyboard())
-
-@bot.message_handler(func=lambda m: user_state.get(m.chat.id) == "awaiting_prompt")
-def handle_awaiting_prompt(message):
-    chat_id = message.chat.id
-    user_last_activity[chat_id] = time.time()
-    prompt = message.text
-    photo_base64 = user_pending_photo.pop(chat_id, None)
-    if not photo_base64:
-        bot.send_message(chat_id, "⚠️ Сначала загрузи фото.")
-        send_main_menu(chat_id)
-        return
-
-    model = user_edit_model.pop(chat_id, "flux")
-    face_mode = user_face_mode.pop(chat_id, "full_edit")
-    aspect = user_edit_aspect.pop(chat_id, None)
-    user_state[chat_id] = None
-
-    if aspect and aspect in ASPECT_PROMPTS:
-        if not prompt.lower().startswith(ASPECT_PROMPTS[aspect].lower()[:10]):
-            prompt = f"{ASPECT_PROMPTS[aspect]}. {prompt}"
-        user_last_edit_aspect[chat_id] = aspect
-
-    if face_mode == "keep_face":
-        prompt = "Keep the face and facial features completely unchanged. Do not modify the face. Only apply the following changes: " + prompt
-
-    cost = CREDIT_COSTS["edit_pro"]
-    with data_lock:
-        if chat_id != ADMIN_ID:
-            if user_credits.get(chat_id, 0) < cost:
-                bot.send_message(chat_id, f"❌ Недостаточно 🔷. Нужно {cost} 🔷.")
-                send_main_menu(chat_id)
-                return
-            user_credits[chat_id] -= cost
-            user_credit_history[chat_id].append((time.time(), -cost, f"Редактирование {model}"))
-            save_data()
-        bot.send_message(chat_id, f"✅ Списано {cost} 🔷. Осталось: {user_credits[chat_id]}")
-
-    logging.info(f"[EDIT] chat_id={chat_id}, model={model}, face={face_mode}, aspect={aspect}")
-    bot.send_message(chat_id, f"🎨 Редактирую через {model}...")
-
-    if model == "flux":
-        img_data, error_msg = edit_image_flux(prompt, photo_base64)
-    else:
-        img_data, error_msg = edit_image_seedream(prompt, photo_base64)
-
-    if img_data:
-        caption = f"✅ Отредактировано ({model})"
-        if face_mode == "keep_face":
-            caption += " с сохранением лица"
-
-        user_last_image[chat_id] = base64.b64encode(img_data).decode('utf-8')
-        user_last_edit_model[chat_id] = model
-        user_last_face_mode[chat_id] = face_mode
-        if aspect:
-            user_last_edit_aspect[chat_id] = aspect
-
-        output, err = _prepare_image_bytes(img_data)
-        if err:
-            logging.error(f"Edit prepare error: {err}")
-            output = img_data
-
-        markup = InlineKeyboardMarkup(row_width=2)
-        markup.add(
-            InlineKeyboardButton("🔄 Продолжить редактирование", callback_data="edit_again"),
-            InlineKeyboardButton("🔙 Главное меню", callback_data="goto_main"),
-        )
-
-        try:
-            bot.send_photo(chat_id, output, caption=caption, reply_markup=markup)
-        except Exception as e:
-            logging.error(f"Edit image send error: {e}")
-            bot.send_document(chat_id, io.BytesIO(img_data), caption=caption, reply_markup=markup)
-        return
-
-    elif error_msg:
-        with data_lock:
-            if chat_id != ADMIN_ID:
-                user_credits[chat_id] += cost
-                user_credit_history[chat_id].append((time.time(), cost, f"Возврат за редактирование {model}"))
-                save_data()
-        bot.send_message(chat_id, f"❌ Ошибка редактирования. {cost} 🔷 возвращены.")
-        bot.send_message(chat_id, f"❌ Не удалось отредактировать изображение.\n{error_msg}")
-        send_main_menu(chat_id)
-    else:
-        with data_lock:
-            if chat_id != ADMIN_ID:
-                user_credits[chat_id] += cost
-                user_credit_history[chat_id].append((time.time(), cost, "Возврат за редактирование (пустой ответ)"))
-                save_data()
-        bot.send_message(chat_id, "❌ Не удалось отредактировать изображение. 🔷 возвращены.")
-        send_main_menu(chat_id)
-
 # ================== VIDEO PROMPT HANDLERS ==================
 @bot.message_handler(func=lambda m: user_state.get(m.chat.id) == "awaiting_video_prompt")
 def handle_video_prompt(message):
@@ -1699,73 +1675,7 @@ def handle_video_multi_prompt(message):
     )
     user_video_params[chat_id]["multi_status_msg_id"] = msg.message_id
 
-# ================== CHAT (AGENT MODE) ==================
-@bot.message_handler(func=lambda m: True, content_types=["text"])
-def handle_text_chat(message):
-    if message.text.startswith("/"):
-        return
-    if message.text in [
-        "🖼 Создать изображение", "🎨 Редактировать фото", "🎥 Создать видео",
-        "💬 Спросить (чат)", "👤 Профиль", "💰 Магазин", "🔙 Главное меню",
-        "📖 Инструкция",
-    ]:
-        send_main_menu(message.chat.id, "Пожалуйста, используйте кнопки меню.")
-        return
-    chat_id = message.chat.id
-    user_last_activity[chat_id] = time.time()
-    state = user_state.get(chat_id)
-    if state in [
-        "awaiting_prompt", "awaiting_generate_prompt", "awaiting_photo",
-        "awaiting_video_prompt", "awaiting_video_multi_prompt", "awaiting_multi_photos",
-        "awaiting_video_image_first", "awaiting_video_image_last", "awaiting_video_last_choice",
-        "selecting_aspect", "select_model_edit", "select_model_generate",
-    ]:
-        return
-
-    if chat_id == ADMIN_ID:
-        reply = run_agent(chat_id, message.text)
-        bot.send_message(chat_id, reply, reply_markup=back_keyboard())
-        with data_lock:
-            save_data()
-        return
-
-    with data_lock:
-        current_count = user_message_count.get(chat_id, 0)
-        next_count = current_count + 1
-        pending_charge = False
-        if next_count >= 50:
-            if user_credits.get(chat_id, 0) < CREDIT_COSTS["deepseek_session"]:
-                save_data()
-                bot.send_message(chat_id, "❌ Недостаточно 🔷 для продолжения чата. Пополните баланс в магазине 💰.")
-                return
-            pending_charge = True
-        user_message_count[chat_id] = next_count
-        save_data()
-
-    reply = run_agent(chat_id, message.text)
-
-    if pending_charge and reply and not reply.startswith("⚠️") and not reply.startswith("❌"):
-        with data_lock:
-            user_credits[chat_id] -= CREDIT_COSTS["deepseek_session"]
-            user_credit_history[chat_id].append((time.time(), -CREDIT_COSTS["deepseek_session"], "Пакет из 50 сообщений Агента"))
-            user_message_count[chat_id] = 0
-            save_data()
-        bot.send_message(chat_id, f"💬 Использовано 50 сообщений. Списано {CREDIT_COSTS['deepseek_session']} 🔷. Осталось: {user_credits[chat_id]} 🔷.")
-    elif pending_charge:
-        with data_lock:
-            user_message_count[chat_id] -= 1
-            save_data()
-        bot.send_message(chat_id, "⚠️ Ошибка получения ответа агента. 🔷 не списаны.")
-
-    bot.send_message(chat_id, reply, reply_markup=back_keyboard())
-    with data_lock:
-        save_data()
-
-@bot.message_handler(func=lambda m: True)
-def handle_other(message):
-    bot.send_message(message.chat.id, "Пожалуйста, используй кнопки меню.")
-
-# ================== WEBHOOK & RUN ==================
+# ================== WEBHOOK & FLASK STUDIO ENDPOINTS ==================
 @app.route("/")
 def index():
     return "Bot is running"
@@ -1773,6 +1683,47 @@ def index():
 @app.route("/health")
 def health():
     return "OK", 200
+
+@app.route("/studio")
+def studio_page():
+    return WEBAPP_HTML
+
+@app.route("/api/webapp_submit_video", methods=["POST"])
+def webapp_submit_video():
+    data = request.json
+    uid = int(data.get("user_id", 0))
+    scenes = data.get("scenes", [])
+    asp = data.get("aspect_ratio", "16:9")
+    photos = data.get("photos", [])
+
+    if not uid or not scenes:
+        return jsonify({"ok": False, "error": "Неверные данные формы"}), 400
+
+    total_dur = sum(int(s.get("duration", 3)) for s in scenes)
+    cost = total_dur * 5
+
+    with data_lock:
+        if uid != ADMIN_ID and user_credits.get(uid, 0) < cost:
+            return jsonify({"ok": False, "error": f"Недостаточно токенов 🔷. Нужно {cost}, у вас {user_credits.get(uid, 0)}."}), 400
+        if uid != ADMIN_ID:
+            user_credits[uid] -= cost
+            user_credit_history[uid].append((time.time(), -cost, f"Студия Kling {total_dur}с"))
+            save_data()
+
+    try:
+        bot.send_message(
+            uid,
+            f"🎬 <b>Заказ из Визуальной Студии принят!</b>\nСюжет из {len(scenes)} кадров ({total_dur} сек), референсов: {len(photos)}.\nЗапускаю рендер Kling 3.0 Pro...",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logging.error(f"Не удалось отправить уведомление юзеру {uid}: {e}")
+
+    user_video_model[uid] = "kwaivgi/kling-v3.0-pro"
+    user_video_params[uid] = {"duration": total_dur, "aspect_ratio": asp, "audio": True}
+
+    Thread(target=generate_video_async, args=(uid, None, None, None, scenes, photos), daemon=True).start()
+    return jsonify({"ok": True})
 
 @app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
 def webhook():
