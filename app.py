@@ -410,37 +410,77 @@ def _build_headers():
         "X-Title": "TelegramBot",
     }
 
-# ================== AGENT TOOLS HELPERS (ИСПРАВЛЕНО НА СТАБИЛЬНЫЙ ПАРСЕР) ==================
+# ================== AGENT TOOLS HELPERS ==================
 def helper_web_search(query):
     try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Referer": "https://html.duckduckgo.com/",
+        }
         items = []
-        rss_url = f"https://news.google.com/rss/search?q={urllib.parse.quote(query)}&hl=ru&gl=RU&ceid=RU:ru"
-        r = requests.get(rss_url, timeout=8)
-        if r.status_code == 200:
+
+        # DuckDuckGo HTML
+        try:
+            url = "https://html.duckduckgo.com/html/"
+            dr = requests.post(url, data={"q": query, "kl": "ru-ru"}, headers=headers, timeout=12)
+            if dr.status_code == 200:
+                text = dr.text
+                titles = re.findall(r'<a[^>]+class="result__a"[^>]*>(.*?)</a>', text, re.DOTALL)
+                snippets = re.findall(r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>', text, re.DOTALL)
+                for i in range(min(len(titles), len(snippets), 5)):
+                    t = re.sub(r'<.*?>', '', titles[i]).strip()
+                    s = re.sub(r'<.*?>', '', snippets[i]).strip()
+                    if t or s:
+                        items.append(f"{t}: {s}" if t and s else (t or s))
+        except Exception as e:
+            logging.warning(f"DuckDuckGo HTML error: {e}")
+
+        # Fallback: DuckDuckGo Lite
+        if len(items) < 3:
             try:
-                root = ET.fromstring(r.content)
-                for item in root.findall(".//item")[:3]:
-                    title = item.find("title").text if item.find("title") is not None else ""
-                    items.append(f"Новость: {title}")
+                lite_url = "https://lite.duckduckgo.com/lite/"
+                dr2 = requests.post(lite_url, data={"q": query, "kl": "ru-ru"}, headers=headers, timeout=12)
+                if dr2.status_code == 200:
+                    text = dr2.text
+                    rows = re.findall(
+                        r'<tr[^>]*>.*?<td[^>]*class="result-link"[^>]*>.*?<a[^>]*>(.*?)</a>.*?</td>.*?<td[^>]*class="result-snippet"[^>]*>(.*?)</td>.*?</tr>',
+                        text, re.DOTALL | re.IGNORECASE
+                    )
+                    for row in rows[:5]:
+                        t = re.sub(r'<.*?>', '', row[0]).strip()
+                        s = re.sub(r'<.*?>', '', row[1]).strip()
+                        if t or s:
+                            items.append(f"{t}: {s}" if t and s else (t or s))
+            except Exception as e:
+                logging.warning(f"DuckDuckGo Lite error: {e}")
+
+        # Fallback: Google News RSS (только для новостных запросов)
+        if len(items) < 2:
+            try:
+                rss_url = f"https://news.google.com/rss/search?q={urllib.parse.quote(query)}&hl=ru&gl=RU&ceid=RU:ru"
+                r = requests.get(rss_url, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
+                if r.status_code == 200:
+                    root = ET.fromstring(r.content)
+                    for item in root.findall(".//item")[:3]:
+                        title = item.find("title").text if item.find("title") is not None else ""
+                        if title:
+                            items.append(f"Новость: {title}")
             except Exception:
                 pass
 
-        if len(items) < 3:
-            url = "https://html.duckduckgo.com/html/"
-            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-            dr = requests.post(url, data={"q": query, "kl": "ru-ru"}, headers=headers, timeout=10)
-            text = dr.text
-            snippets = re.findall(r'<a class="result__snippet"[^>]*>(.*?)</a>', text, re.DOTALL)
-            clean = [re.sub(r'<.*?>', '', s).strip() for s in snippets[:3]]
-            items.extend(clean)
-
-        return items if items else ["Актуальных данных по запросу не обнаружено."]
+        return items if items else ["Поиск не дал результатов. Попробуйте уточнить запрос."]
     except Exception as e:
-        return [f"Справка поиска: {e}"]
+        return [f"Ошибка поиска: {e}"]
 
 def helper_fetch_webpage(url):
     try:
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+        }
         r = requests.get(url, headers=headers, timeout=15)
         text = unescape(r.text)
         text = re.sub(r'<style.*?>.*?</style>', '', text, flags=re.DOTALL)
@@ -545,20 +585,32 @@ def extract_deepseek_tools(choice_msg):
         return choice_msg["tool_calls"], choice_msg.get("content", "")
 
     content = choice_msg.get("content", "")
+    if not content:
+        return None, ""
+
     if "<｜tool" in content or "<|tool" in content:
-        raw_matches = re.findall(
-            r"<[｜\|]tool.*?begin[｜\|]>function<[｜\|]tool.*?sep[｜\|]>(\w+)\s*\n?({[^<]+})",
-            content
-        )
+        unified = content.replace("<|", "<｜").replace("|>", "｜>")
+        pattern = r'<｜tool▁call▁begin｜>function<｜tool▁sep｜>(\w+)\s*\n?(\{.*?\})<｜tool▁call▁end｜>'
+        raw_matches = re.findall(pattern, unified, re.DOTALL)
+        if not raw_matches:
+            pattern2 = r'<｜tool▁sep｜>(\w+)(?:\s*\n?)([\s\S]*?)(?:<｜tool▁call▁end｜>|<｜tool▁calls▁end｜>|$)'
+            raw_matches = re.findall(pattern2, unified, re.DOTALL)
+
         t_calls = []
         for fn_name, arg_str in raw_matches:
+            fn_name = fn_name.strip()
+            arg_str = arg_str.strip()
+            if not arg_str.startswith("{"):
+                json_match = re.search(r'(\{.*\})', arg_str, re.DOTALL)
+                if json_match:
+                    arg_str = json_match.group(1)
             t_calls.append({
-                "id": f"call_{int(time.time()*1000)}",
+                "id": f"call_{int(time.time()*1000)}_{len(t_calls)}",
                 "type": "function",
-                "function": {"name": fn_name.strip(), "arguments": arg_str.strip()}
+                "function": {"name": fn_name, "arguments": arg_str}
             })
         if t_calls:
-            clean_text = re.split(r"<[｜\|]tool", content)[0].strip()
+            clean_text = unified.split("<｜tool")[0].strip()
             clean_text = re.sub(r"\b(попис|минут|секун|поиск|созда|арт|функц)$", "", clean_text).strip()
             return t_calls, clean_text
 
@@ -583,23 +635,17 @@ def run_agent(chat_id, user_text):
     system_prompt = (
         "Ты — персональный ИИ-агент и кинорежиссер NESPIM в Telegram. Ты умный, вежливый, инициативный.\n"
         "Твои возможности (инструменты):\n"
-        "1. web_search — гуглить в интернете новости, факты, справку.\n"
-        "2. fetch_webpage — читать ссылки юзера.\n"
-        "3. generate_image — генерировать арты (Flux Pro, стоит 2 🔷).\n"
-        "4. generate_multiscene_video — снимать видео Kling 3.0 Pro (5 🔷/сек).\n"
-        "5. get_my_balance — проверять баланс юзера.\n"
-        "6. clear_memory — очищать память беседы.\n\n"
-        "ВАЖНЕЙШИЕ ПРАВИЛА СКОРОСТИ И ПОИСКА:\n"
-        "- Делай СТРОГО НЕ БОЛЕЕ ОДНОГО вызова web_search за весь ответ! Получив данные поиска, сразу формируй финальный ответ юзеру. Запрещено перебирать поисковые запросы повторно.\n"
-        "- Если юзер прислал ссылку — вызови fetch_webpage ровно один раз.\n\n"
-        "ПРАВИЛА ТРАТ НА ВИДЕО:\n"
-        "- КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО вызывать generate_multiscene_video без предварительного согласия юзера!\n"
-        "  Когда юзер просит видеоролик:\n"
-        "  1) Предложи красивый покадровый сценарий с секундами.\n"
-        "  2) Посчитай стоимость рендера (5 🔷 за 1 сек).\n"
-        "  3) ОБЯЗАТЕЛЬНО спроси: «Создаем видео? Стоимость ХХ 🔷».\n"
-        "  4) ТОЛЬКО получив утвердительный ответ («Да/Создавай») — вызывай функцию с confirmed_by_user=True.\n"
-        "- Если юзер просит просто нарисовать арт/картинку — СРАЗУ вызывай generate_image.\n"
+        "1. web_search — поиск актуальной информации в интернете. Используй СРАЗУ, если юзер спрашивает о событиях после 2024 года, погоду, новости, курсы валют или актуальные факты.\n"
+        "2. fetch_webpage — чтение ссылок.\n"
+        "3. generate_image — генерация картинок (Flux Pro, 2 🔷). Если юзер просит 'нарисуй', 'сгенерируй картинку', 'арт' — вызывай СРАЗУ. aspect_ratio по умолчанию '16:9', если юзер не указал иное.\n"
+        "4. generate_multiscene_video — видео Kling 3.0 Pro (5 🔷/сек). Только после подтверждения юзера.\n"
+        "5. get_my_balance — баланс.\n"
+        "6. clear_memory — очистка памяти.\n\n"
+        "ВАЖНЕЙШИЕ ПРАВИЛА:\n"
+        "- Делай СТРОГО НЕ БОЛЕЕ ОДНОГО вызова web_search за ответ! Получив данные, сразу формируй финальный ответ.\n"
+        "- Если юзер прислал ссылку — вызови fetch_webpage ровно один раз.\n"
+        "- Если юзер просит картинку — вызывай generate_image немедленно, aspect_ratio: '16:9' (или '9:16'/'1:1' если просит вертикальную/квадратную).\n"
+        "- Для видео: сначала предложи сценарий, посчитай стоимость (5 🔷/сек), спроси подтверждение. Только потом generate_multiscene_video с confirmed_by_user=True.\n"
         "- Отвечай понятно, емко, на русском языке."
     )
 
@@ -753,8 +799,18 @@ def _parse_image_response(resp):
             img_url = msg["images"][0]["image_url"]["url"]
         elif msg.get("content", "").startswith("data:image/"):
             img_url = msg["content"]
+        elif msg.get("content", ""):
+            content = msg["content"]
+            url_match = re.search(r'(https?://\S+\.(?:jpg|jpeg|png|webp|gif))', content, re.IGNORECASE)
+            if url_match:
+                img_url = url_match.group(1)
+                return requests.get(img_url, timeout=30).content, None
+            elif content.startswith("data:image/"):
+                img_url = content
+            else:
+                return None, f"Нет изображения в ответе. Ответ: {content[:200]}"
         else:
-            return None, msg.get("content", "Нет изображения в ответе")
+            return None, "Нет изображения в ответе"
         if img_url.startswith("data:image/"):
             return base64.b64decode(img_url.split(",", 1)[1]), None
         return requests.get(img_url, timeout=30).content, None
@@ -1048,7 +1104,7 @@ def video_model_keyboard():
     markup.add(
         InlineKeyboardButton("🌱 Seedance 2.0", callback_data="vmodel_seedance-2.0"),
         InlineKeyboardButton("🎬 Kling O1", callback_data="vmodel_kling-o1"),
-        InlineKeyboardButton("🎥 Kling 3.0 Pro ($0.168/с)", callback_data="vmodel_kling-pro"),
+        InlineKeyboardButton("🎥 Kling 3.0 Pro", callback_data="vmodel_kling-pro"),
     )
     return markup
 
@@ -1497,17 +1553,65 @@ def handle_edit_prompt(message):
 
     if img_bytes:
         out_b, _ = _prepare_image_bytes(img_bytes)
-        bot.send_photo(chat_id, out_b or img_bytes, caption="🎨 Готово!")
+        photo_bytes = out_b or img_bytes
+        b64_new = base64.b64encode(photo_bytes).decode("utf-8")
+        user_last_image[chat_id] = b64_new
+        user_last_edit_model[chat_id] = model
+        user_last_face_mode[chat_id] = face_mode
+
+        markup = InlineKeyboardMarkup()
+        markup.add(
+            InlineKeyboardButton("🔄 Продолжить редактирование", callback_data="continue_edit"),
+            InlineKeyboardButton("🔙 Главное меню", callback_data="back_to_main")
+        )
+        bot.send_photo(chat_id, photo_bytes, caption="🎨 Готово!", reply_markup=markup)
     else:
         with data_lock:
             if chat_id != ADMIN_ID:
                 user_credits[chat_id] += cost
                 save_data()
         bot.send_message(chat_id, f"❌ Ошибка редактирования: {err}. Токены 🔷 возвращены.")
+        send_main_menu(chat_id)
+
     user_state.pop(chat_id, None)
     user_edit_model.pop(chat_id, None)
     user_face_mode.pop(chat_id, None)
     user_pending_photo.pop(chat_id, None)
+
+# --- CALLBACK: Продолжить редактирование ---
+@bot.callback_query_handler(func=lambda call: call.data == "continue_edit")
+def continue_edit_callback(call):
+    chat_id = call.message.chat.id
+    bot.answer_callback_query(call.id)
+    b64 = user_last_image.get(chat_id)
+    if not b64:
+        bot.send_message(chat_id, "❌ Предыдущее изображение не найдено. Начните заново.")
+        send_main_menu(chat_id)
+        return
+    try:
+        bot.delete_message(chat_id, call.message.message_id)
+    except Exception:
+        pass
+    user_pending_photo[chat_id] = b64
+    user_edit_model[chat_id] = user_last_edit_model.get(chat_id, "flux")
+    user_face_mode[chat_id] = user_last_face_mode.get(chat_id, False)
+    user_state[chat_id] = "awaiting_edit_prompt"
+    bot.send_message(chat_id, "🔄 Режим цепочки редактирования.\n✏️ Введите описание следующих изменений:", reply_markup=back_keyboard())
+
+# --- CALLBACK: Главное меню (inline) ---
+@bot.callback_query_handler(func=lambda call: call.data == "back_to_main")
+def back_to_main_callback(call):
+    chat_id = call.message.chat.id
+    bot.answer_callback_query(call.id)
+    try:
+        bot.delete_message(chat_id, call.message.message_id)
+    except Exception:
+        pass
+    for d in [user_state, user_edit_model, user_face_mode, user_pending_photo,
+              user_last_image, user_last_edit_model, user_last_face_mode,
+              user_generate_model, user_generate_aspect, user_video_frames,
+              user_video_params, user_video_model, user_video_mode, user_edit_aspect]:
+        d.pop(chat_id, None)
     send_main_menu(chat_id)
 
 # --- ВОССТАНОВЛЕННЫЕ БЛОКИ 3: ВИДЕО ИЗ КАРТИНКИ ---
