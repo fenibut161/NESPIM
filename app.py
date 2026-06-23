@@ -83,7 +83,7 @@ ASPECT_PROMPTS = {
     "4:3": "standard 4:3 photo composition, classic portrait or landscape ratio",
 }
 
-# --- TELEGRAM WEB APP HTML TEMPLATE (PER-SCENE REFERENCE UI) ---
+# --- TELEGRAM WEB APP HTML TEMPLATE (PER-SCENE REFERENCE UI + 18S LIMIT) ---
 WEBAPP_HTML = """
 <!DOCTYPE html>
 <html lang="ru">
@@ -103,7 +103,7 @@ WEBAPP_HTML = """
         }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-            background-color: var(--bg-color); color: var(--text-color); margin: 0; padding: 16px; padding-bottom: 90px;
+            background-color: var(--bg-color); color: var(--text-color); margin: 0; padding: 16px; padding-bottom: 95px;
         }
         .header { text-align: center; margin-bottom: 18px; }
         .header h1 { font-size: 20px; margin: 0; font-weight: 700; }
@@ -146,9 +146,9 @@ WEBAPP_HTML = """
         .add-scene-btn { width: 100%; padding: 14px; background: rgba(255,255,255,0.08); border: none; border-radius: 12px; color: var(--text-color); font-weight: 600; font-size: 14px; cursor: pointer; }
         .main-btn {
             position: fixed; bottom: 16px; left: 16px; right: 16px; background: var(--btn-color); color: var(--btn-text);
-            border: none; padding: 16px; border-radius: 14px; font-size: 16px; font-weight: 700; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.4); cursor: pointer; text-align: center;
+            border: none; padding: 16px; border-radius: 14px; font-size: 15px; font-weight: 700; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.4); cursor: pointer; text-align: center;
         }
-        .main-btn:disabled { opacity: 0.5; }
+        .main-btn:disabled { background: #52525b; color: #9ca3af; cursor: not-allowed; }
     </style>
 </head>
 <body>
@@ -170,7 +170,7 @@ WEBAPP_HTML = """
 <div class="card">
     <div class="card-title">
         <span>Сцены фильма (макс. 6)</span>
-        <span style="font-size:13px; color:var(--btn-color)" id="totalSec">3с (15 🔷)</span>
+        <span style="font-size:13px; font-weight:700" id="totalSec">3с (15 🔷)</span>
     </div>
     <div id="scenesContainer"></div>
     <button class="add-scene-btn" onclick="addScene()" id="addBtn">+ Добавить следующий кадр</button>
@@ -186,6 +186,7 @@ WEBAPP_HTML = """
     let currentAspect = '16:9';
     let activeUploadIdx = null;
     let scenes = [{ prompt: '', dur: 3, photo: null }];
+    const MAX_KLING_SEC = 18; // Жесткий лимит Kling 3.0 Pro
 
     function renderScenes() {
         const cont = document.getElementById('scenesContainer');
@@ -193,7 +194,7 @@ WEBAPP_HTML = """
         scenes.forEach((sc, idx) => {
             let imgHtml = sc.photo 
                 ? `<img src="data:image/jpeg;base64,${sc.photo}"><div class="del-img-badge" onclick="event.stopPropagation(); removePhoto(${idx})">✕</div>`
-                : `<div class="empty-hint"><span style="font-size:16px">🖼</span> Прикрепить картинку для Сцены ${idx+1}</div>`;
+                : `<div class="empty-hint"><span style="font-size:16px">🖼</span> Прикрепить референс для Сцены ${idx+1}</div>`;
 
             cont.innerHTML += `
                 <div class="scene-block">
@@ -264,9 +265,19 @@ WEBAPP_HTML = """
 
     function updateSummary() {
         const tot = scenes.reduce((a, b) => a + b.dur, 0);
-        const cost = tot * 5;
-        document.getElementById('totalSec').innerText = `${tot}с (${cost} 🔷)`;
-        document.getElementById('submitBtn').innerText = `🚀 Запустить рендер фильма (${cost} 🔷)`;
+        const btn = document.getElementById('submitBtn');
+        const badge = document.getElementById('totalSec');
+
+        if (tot > MAX_KLING_SEC) {
+            badge.innerHTML = `<span style="color:#ef4444">⚠️ Лимит 18с! У вас ${tot}с</span>`;
+            btn.disabled = true;
+            btn.innerText = `⚠️ Уменьшите секунды (максимум 18с)`;
+        } else {
+            const cost = tot * 5;
+            badge.innerHTML = `<span style="color:#3b82f6">${tot}с (${cost} 🔷)</span>`;
+            btn.disabled = false;
+            btn.innerText = `🚀 Запустить рендер фильма (${cost} 🔷)`;
+        }
     }
 
     async function submitStudio() {
@@ -549,6 +560,32 @@ AGENT_TOOLS = [
 ]
 
 # ================== DEEPSEEK AGENT CORE ==================
+def extract_deepseek_tools(choice_msg):
+    # 1. Если OpenRouter нормально распарсил функции в JSON
+    if choice_msg.get("tool_calls"):
+        return choice_msg["tool_calls"], choice_msg.get("content", "")
+
+    # 2. Если OpenRouter пропустил сырые теги DeepSeek V3/R1 в content
+    content = choice_msg.get("content", "")
+    if "<｜tool" in content or "<|tool" in content:
+        raw_matches = re.findall(
+            r"<[｜\|]tool.*?begin[｜\|]>function<[｜\|]tool.*?sep[｜\|]>(\w+)\s*\n?({[^<]+})",
+            content
+        )
+        t_calls = []
+        for fn_name, arg_str in raw_matches:
+            t_calls.append({
+                "id": f"call_{int(time.time()*1000)}",
+                "type": "function",
+                "function": {"name": fn_name.strip(), "arguments": arg_str.strip()}
+            })
+        if t_calls:
+            clean_text = re.split(r"<[｜\|]tool", content)[0].strip()
+            clean_text = re.sub(r"\b(попис|минут|секун|поиск|созда|арт|функц)$", "", clean_text).strip()
+            return t_calls, clean_text
+
+    return None, content
+
 def ask_deepseek(prompt):
     headers = _build_headers()
     payload = {"model": "deepseek/deepseek-chat", "messages": [{"role": "user", "content": prompt}]}
@@ -604,11 +641,15 @@ def run_agent(chat_id, user_text):
                 return "⚠️ Ошибка связи с нейросетью."
 
             data = r.json()
-            msg = data["choices"][0]["message"]
+            choice_msg = data["choices"][0]["message"]
+            tool_calls, clean_content = extract_deepseek_tools(choice_msg)
 
-            if "tool_calls" in msg and msg["tool_calls"]:
-                messages.append(msg)
-                for tc in msg["tool_calls"]:
+            if tool_calls:
+                choice_msg["content"] = clean_content
+                choice_msg["tool_calls"] = tool_calls
+                messages.append(choice_msg)
+
+                for tc in tool_calls:
                     fn_name = tc["function"]["name"]
                     fn_args = tc["function"]["arguments"]
                     call_id = tc["id"]
@@ -702,7 +743,7 @@ def run_agent(chat_id, user_text):
                         "content": str(res_content)
                     })
             else:
-                final_text = msg.get("content", "")
+                final_text = choice_msg.get("content", "")
                 history.append({"role": "user", "content": user_text})
                 history.append({"role": "assistant", "content": final_text})
                 user_chat_history[chat_id] = history[-20:]
@@ -1474,10 +1515,10 @@ def video_params_done(call):
         user_state[chat_id] = "awaiting_video_multi_prompt"
         bot.send_message(
             chat_id,
-            "🎬 <b>Сценарий (Kling 3.0 Pro)</b>\n\n"
+            "🎬 <b>Шаг 1 из 2: Сценарий (Kling 3.0 Pro)</b>\n\n"
             "Опишите сюжет ролика по последовательным сценам. Каждую сцену пишите с новой строки в формате:\n"
             "<code>[секунды] Описание действия в кадре</code>\n\n"
-            "📌 <b>Пример (сумма 10 сек):</b>\n"
+            "📌 <b>Пример (общая сумма 10 сек):</b>\n"
             "<code>3 Крупный план: рыцарь в сияющих доспехах смотрит на замок</code>\n"
             "<code>4 Средний план: он достает меч из ножен под раскаты грома</code>\n"
             "<code>3 Общий план: молния ударяет в главную башню замка</code>\n\n"
@@ -1628,72 +1669,6 @@ def handle_video_multi_prompt(message):
     )
     user_video_params[chat_id]["multi_status_msg_id"] = msg.message_id
 
-# ================== CHAT (AGENT MODE) ==================
-@bot.message_handler(func=lambda m: True, content_types=["text"])
-def handle_text_chat(message):
-    if message.text.startswith("/"):
-        return
-    if message.text in [
-        "🖼 Создать изображение", "🎨 Редактировать фото", "🎥 Создать видео",
-        "💬 Спросить (чат)", "👤 Профиль", "💰 Магазин", "🔙 Главное меню",
-        "📖 Инструкция",
-    ]:
-        send_main_menu(message.chat.id, "Пожалуйста, используйте кнопки меню.")
-        return
-    chat_id = message.chat.id
-    user_last_activity[chat_id] = time.time()
-    state = user_state.get(chat_id)
-    if state in [
-        "awaiting_prompt", "awaiting_generate_prompt", "awaiting_photo",
-        "awaiting_video_prompt", "awaiting_video_multi_prompt", "awaiting_multi_photos",
-        "awaiting_video_image_first", "awaiting_video_image_last", "awaiting_video_last_choice",
-        "selecting_aspect", "select_model_edit", "select_model_generate",
-    ]:
-        return
-
-    if chat_id == ADMIN_ID:
-        reply = run_agent(chat_id, message.text)
-        bot.send_message(chat_id, reply, reply_markup=back_keyboard())
-        with data_lock:
-            save_data()
-        return
-
-    with data_lock:
-        current_count = user_message_count.get(chat_id, 0)
-        next_count = current_count + 1
-        pending_charge = False
-        if next_count >= 50:
-            if user_credits.get(chat_id, 0) < CREDIT_COSTS["deepseek_session"]:
-                save_data()
-                bot.send_message(chat_id, "❌ Недостаточно 🔷 для продолжения чата. Пополните баланс в магазине 💰.")
-                return
-            pending_charge = True
-        user_message_count[chat_id] = next_count
-        save_data()
-
-    reply = run_agent(chat_id, message.text)
-
-    if pending_charge and reply and not reply.startswith("⚠️") and not reply.startswith("❌"):
-        with data_lock:
-            user_credits[chat_id] -= CREDIT_COSTS["deepseek_session"]
-            user_credit_history[chat_id].append((time.time(), -CREDIT_COSTS["deepseek_session"], "Пакет из 50 сообщений Агента"))
-            user_message_count[chat_id] = 0
-            save_data()
-        bot.send_message(chat_id, f"💬 Использовано 50 сообщений. Списано {CREDIT_COSTS['deepseek_session']} 🔷. Осталось: {user_credits[chat_id]} 🔷.")
-    elif pending_charge:
-        with data_lock:
-            user_message_count[chat_id] -= 1
-            save_data()
-        bot.send_message(chat_id, "⚠️ Ошибка получения ответа агента. 🔷 не списаны.")
-
-    bot.send_message(chat_id, reply, reply_markup=back_keyboard())
-    with data_lock:
-        save_data()
-
-@bot.message_handler(func=lambda m: True)
-def handle_other(message):
-    bot.send_message(message.chat.id, "Пожалуйста, используй кнопки меню.")
-
 # ================== WEBHOOK & FLASK STUDIO ENDPOINTS ==================
 @app.route("/")
 def index():
@@ -1731,7 +1706,7 @@ def webapp_submit_video():
     try:
         bot.send_message(
             uid,
-            f"🎬 <b>Заказ из Визуальной Студии принят!</b>\nСюжет: {len(scenes)} кадров ({total_dur} сек).\nЗапускаю рендер Kling 3.0 Pro...",
+            f"🎬 <b>Заказ из Визуальной Студии принят!</b>\nСюжет из {len(scenes)} кадров ({total_dur} сек).\nЗапускаю рендер Kling 3.0 Pro...",
             parse_mode="HTML"
         )
     except Exception as e:
@@ -1745,12 +1720,13 @@ def webapp_submit_video():
 
 @app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
 def webhook():
-    # ИСПРАВЛЕНО: request.is_json вместо == 'application/json', чтобы принимать новые заголовки Телеграма с charset
+    # ИСПРАВЛЕНО: Фоновая асинхронная раздача апдейтов, чтобы мгновенно отвечать 200 OK Телеграму
+    # и полностью исключить зависания инлайн-кнопок при вызове внешних API
     if request.is_json:
         try:
             json_data = request.get_json()
             update = telebot.types.Update.de_json(json_data)
-            bot.process_new_updates([update])
+            Thread(target=bot.process_new_updates, args=([update],), daemon=True).start()
             return "OK", 200
         except Exception as e:
             logging.error(f"Webhook processing error: {e}")
@@ -1789,7 +1765,6 @@ def set_webhook():
     except Exception as e:
         logging.error(f"❌ Webhook exception: {e}")
 
-# Автоматически регистрируем вебхук в фоне при старте модуля (поддержка Gunicorn на Render)
 Thread(target=set_webhook, daemon=True).start()
 
 if __name__ == "__main__":
