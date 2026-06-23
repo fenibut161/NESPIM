@@ -207,11 +207,11 @@ def _build_headers():
 # ================== AGENT TOOLS HELPERS ==================
 def helper_web_search(query):
     try:
-        url = "https://html.duckduckgo.com/html/"
+        url = "https://lite.duckduckgo.com/lite/"
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         r = requests.post(url, data={"q": query}, headers=headers, timeout=10)
         text = unescape(r.text)
-        snippets = re.findall(r'<a class="result__snippet[^>]*>(.*?)</a>', text, re.DOTALL)
+        snippets = re.findall(r'<td class=[\x27"]result-snippet[\x27"]>(.*?)</td>', text, re.DOTALL)
         clean = [re.sub(r'<.*?>', '', s).strip() for s in snippets[:4]]
         return clean if clean else ["По запросу ничего не найдено в поисковике."]
     except Exception as e:
