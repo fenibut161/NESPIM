@@ -698,6 +698,7 @@ def send_video_safe(chat_id, data, caption="✅ Ваше видео готово
         except: return False
 
 def poll_video_task(polling_url, headers, chat_id, status_message_id, model_display=""):
+    """При завершении скачивает видео с авторизацией и отправляет в чат (до 2 ГБ)."""
     start_time = time.time()
     last_edit = 0
     for attempt in range(1, 110):
@@ -724,19 +725,30 @@ def poll_video_task(polling_url, headers, chat_id, status_message_id, model_disp
                     text = f"🎬 <b>{model_display}</b>\n⏳ {stage}...\n⏱ Прошло: {mins} мин\n🔄 Опрос #{attempt} (OpenRouter)"
             elif status == "completed":
                 job_id = polling_url.rstrip("/").split("/")[-1]
-                urls = data.get("unsigned_urls", [])
-                # Всегда отдаём ссылку
-                if urls:
-                    link_text = f"✅ Видео готово! Скачайте по ссылке:\n{urls[0]}"
-                    if len(urls) > 1:
-                        link_text += "\n\nЗеркала:\n" + "\n".join(urls[1:])
-                else:
-                    # Запасной вариант – ссылка на контент OpenRouter
-                    link_text = f"✅ Видео готово! Скачайте по ссылке:\nhttps://openrouter.ai/api/v1/videos/{job_id}/content"
+                # Пробуем скачать видео с авторизацией
+                content_url = f"https://openrouter.ai/api/v1/videos/{job_id}/content"
                 try:
-                    bot.edit_message_text(link_text, chat_id, status_message_id, parse_mode="HTML")
+                    bot.edit_message_text("✅ Генерация завершена, скачиваю видео...", chat_id, status_message_id)
                 except:
-                    bot.send_message(chat_id, link_text, parse_mode="HTML")
+                    pass
+                vr = requests.get(content_url, headers=headers, timeout=120)
+                if vr.status_code == 200 and len(vr.content) > 500:
+                    send_video_safe(chat_id, vr.content, f"✅ Готово! {model_display}")
+                else:
+                    # Если не получилось, пробуем unsigned_urls с авторизацией
+                    urls = data.get("unsigned_urls", [])
+                    downloaded = False
+                    for u in urls:
+                        try:
+                            vr = requests.get(u, headers=headers, timeout=120)
+                            if vr.status_code == 200 and len(vr.content) > 500:
+                                send_video_safe(chat_id, vr.content, f"✅ Готово! {model_display}")
+                                downloaded = True
+                                break
+                        except:
+                            pass
+                    if not downloaded:
+                        bot.send_message(chat_id, "⚠️ Видео готово, но не удалось скачать. Попробуйте позже или обратитесь в поддержку.")
                 return
             elif status in ("failed", "cancelled", "expired"):
                 err = data.get("error", status)
