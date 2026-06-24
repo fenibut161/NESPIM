@@ -403,23 +403,18 @@ def _build_headers():
         "X-Title": "TelegramBot",
     }
 
-# ================== WEB SEARCH (RUSSIA-FRIENDLY) ==================
-# ИСПРАВЛЕНО: Яндекс (основной) → Bing через r.jina.ai (fallback) → Google News RSS
+# ================== WEB SEARCH ==================
 def _parse_yandex(html):
     items = []
-    # Яндекс использует <li class="serp-item"> для результатов
     blocks = re.findall(r'<li[^>]*class="[^"]*serp-item[^"]*"[^>]*>(.*?)</li>', html, re.DOTALL)
     if not blocks:
         blocks = re.findall(r'<div[^>]*class="[^"]*organic[^"]*"[^>]*>(.*?)</div>\s*</div>', html, re.DOTALL)
-    
     for block in blocks[:6]:
         title = ""
         snippet = ""
-        # Заголовок: <h2 ...> <a ...>ТЕКСТ</a> </h2>
         t_match = re.search(r'<h2[^>]*>.*?<a[^>]*>(.*?)</a>.*?</h2>', block, re.DOTALL)
         if t_match:
             title = re.sub(r'<.*?>', '', t_match.group(1)).strip()
-        # Сниппет: классы text-container или Organic-Text
         s_match = re.search(r'<div[^>]*class="[^"]*text-container[^"]*"[^>]*>(.*?)</div>', block, re.DOTALL)
         if not s_match:
             s_match = re.search(r'<span[^>]*class="[^"]*Organic-Text[^"]*"[^>]*>(.*?)</span>', block, re.DOTALL)
@@ -427,7 +422,6 @@ def _parse_yandex(html):
             s_match = re.search(r'<div[^>]*class="[^"]*Organic-Text[^"]*"[^>]*>(.*?)</div>', block, re.DOTALL)
         if s_match:
             snippet = re.sub(r'<.*?>', '', s_match.group(1)).strip()
-        
         if title or snippet:
             items.append(f"{title}: {snippet}" if title and snippet else (title or snippet))
     return items
@@ -439,7 +433,6 @@ def helper_web_search(query):
     }
     items = []
     
-    # 1. Яндекс (лучший для русского контента)
     try:
         yandex_url = f"https://yandex.ru/search/?text={urllib.parse.quote(query)}&lr=213&p=0"
         r = requests.get(yandex_url, headers=headers, timeout=15)
@@ -450,17 +443,13 @@ def helper_web_search(query):
     except Exception as e:
         logging.warning(f"Yandex error: {e}")
     
-    # 2. Bing через r.jina.ai (обход блокировок, IP jina.ai)
     if len(items) < 2:
         try:
             jina_url = f"https://r.jina.ai/http://www.bing.com/search?q={urllib.parse.quote(query)}"
             r = requests.get(jina_url, headers=headers, timeout=20)
             logging.info(f"[BING-JINA] status={r.status_code} len={len(r.text)}")
             if r.status_code == 200 and len(r.text) > 200:
-                text = r.text
-                # jina.ai возвращает markdown. Ищем строки с заголовками и сниппетами
-                lines = [l.strip() for l in text.split('\n') if l.strip() and len(l.strip()) > 15]
-                # Фильтруем служебные строки jina.ai
+                lines = [l.strip() for l in r.text.split('\n') if l.strip() and len(l.strip()) > 15]
                 filtered = []
                 for line in lines[:12]:
                     if line.startswith('URL:') or line.startswith('Title:') or line.startswith('('):
@@ -473,7 +462,6 @@ def helper_web_search(query):
         except Exception as e:
             logging.warning(f"Bing jina error: {e}")
     
-    # 3. Google News RSS (только новости)
     if len(items) < 2:
         try:
             rss_url = f"https://news.google.com/rss/search?q={urllib.parse.quote(query)}&hl=ru&gl=RU&ceid=RU:ru"
@@ -487,7 +475,6 @@ def helper_web_search(query):
         except Exception:
             pass
     
-    # Убираем дубликаты
     seen = set()
     unique = []
     for it in items:
@@ -503,7 +490,6 @@ def helper_fetch_webpage(url):
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
         }
         r = requests.get(url, headers=headers, timeout=15)
@@ -531,11 +517,9 @@ def ask_deepseek(prompt):
 def run_agent(chat_id, user_text):
     lower = user_text.lower().strip()
 
-    # META QUESTIONS
     if any(k in lower for k in ["у тебя есть", "ты умеешь", "ты можешь", "твои возможности"]) and any(k in lower for k in ["доступ", "интернет", "сеть", "искать", "гуглить", "поиск"]):
         return "✅ Да, у меня есть доступ к поиску в интернете! Я ищу через Яндекс, Bing и Google News. Задайте вопрос — например, «какой курс доллара сегодня» или «последние новости о...»"
 
-    # 1. Прямые команды
     if lower in ["баланс", "сколько у меня", "мои токены", "мой баланс"]:
         bal = user_credits.get(chat_id, 0)
         return f"💰 Ваш баланс: {bal} 🔷"
@@ -545,7 +529,6 @@ def run_agent(chat_id, user_text):
         save_data()
         return "🧠 Память диалога полностью очищена. Начинаем с чистого листа!"
 
-    # 2. Генерация изображения
     img_triggers = ["нарисуй", "сгенерируй изображение", "сгенерируй картинку", "сделай арт", "арт где", "картинка где"]
     wants_image = any(t in lower for t in img_triggers)
     if wants_image:
@@ -583,7 +566,6 @@ def run_agent(chat_id, user_text):
                     save_data()
             return "❌ Не удалось сгенерировать изображение. Токены 🔷 возвращены."
 
-    # 3. Поиск в интернете
     search_triggers = [
         "новост", "погод", "курс", "цена", "сегодня", "вчера", "завтра",
         "2025", "2026", "актуальн", "свеж", "последн", "текущий", "сейчас",
@@ -602,7 +584,7 @@ def run_agent(chat_id, user_text):
         search_prompt = (
             f"Пользователь задал вопрос: \"{user_text}\"\n\n"
             f"Я выполнил поиск в интернете и получил следующие результаты:\n---\n{context}\n---\n\n"
-            f"ВАЖНЕЙШАЯ ИНСТРУКЦИЯ: поиск УЖЕ выполнен. Если результаты пустые или содержат 'Поиск не дал результатов' — "
+            f"ВАЖНЕЙШАЯ ИНСТРУКЦИЯ: поиск УЖЕ выполнен. Если результаты содержат 'Поиск не дал результатов' — "
             f"скажи пользователю, что поисковик временно недоступен или не нашёл информацию, и предложи уточнить запрос. "
             f"НИ В КОЕМ СЛУЧАЕ не говори что у тебя нет доступа к интернету. "
             f"На основе найденных данных дай точный, развёрнутый ответ на русском языке. Не выдумывай факты."
@@ -615,7 +597,6 @@ def run_agent(chat_id, user_text):
         user_chat_history[chat_id] = history[-20:]
         return answer
 
-    # 4. Обычный чат
     history = list(user_chat_history.get(chat_id, []))
     if len(history) > 20:
         history = history[-18:]
@@ -762,7 +743,7 @@ def edit_image_seedream(prompt, image_base64):
         logging.error(f"Seedream edit error: {e}")
         return None, str(e)
 
-# ================== VIDEO ==================
+# ================== VIDEO (FIXED) ==================
 def compress_image_if_needed(b64_str, max_size=(640, 640), quality=80):
     try:
         img_data = base64.b64decode(b64_str)
@@ -841,6 +822,7 @@ def poll_video_task(polling_url, headers, chat_id, status_message_id, model_disp
             pass
     bot.edit_message_text("❌ Истекло время ожидания (15 мин).", chat_id, status_message_id)
 
+# ИСПРАВЛЕНО: убран frame_type, image из multi_prompt, добавлено логирование
 def generate_video_async(chat_id, prompt=None, first_frame_b64=None, last_frame_b64=None, multi_prompt=None, multi_photos_b64=None):
     params = user_video_params.get(chat_id, {})
     duration = params.get("duration", 5)
@@ -875,12 +857,13 @@ def generate_video_async(chat_id, prompt=None, first_frame_b64=None, last_frame_
     if multi_prompt:
         clean_mp = []
         for idx, item in enumerate(multi_prompt):
-            sc_dict = {"prompt": item.get("prompt", ""), "duration": int(item.get("duration", 3))}
+            # Исправляем mapping dur->duration
+            dur = int(item.get("dur", item.get("duration", 3)))
+            sc_dict = {"prompt": item.get("prompt", ""), "duration": dur}
+            # Фото НЕ вкладываем в multi_prompt, а собираем в frame_images
             if item.get("photo"):
                 d_url = f"data:image/jpeg;base64,{compress_image_if_needed(item['photo'])}"
-                sc_dict["image"] = d_url
-                f_type = "first_frame" if idx == 0 else ("last_frame" if idx == len(multi_prompt)-1 else "reference")
-                frame_images.append({"type": "image_url", "image_url": {"url": d_url}, "frame_type": f_type})
+                frame_images.append({"type": "image_url", "image_url": {"url": d_url}})
             clean_mp.append(sc_dict)
         payload["multi_prompt"] = clean_mp
         model_display += " [Мультисцена Studio]"
@@ -889,15 +872,14 @@ def generate_video_async(chat_id, prompt=None, first_frame_b64=None, last_frame_
         if multi_photos_b64 and isinstance(multi_photos_b64, list):
             for idx, b64 in enumerate(multi_photos_b64[:9]):
                 d_url = f"data:image/jpeg;base64,{compress_image_if_needed(b64)}"
-                f_type = "first_frame" if idx == 0 else ("last_frame" if idx == len(multi_photos_b64)-1 and len(multi_photos_b64)>1 else "reference")
-                frame_images.append({"type": "image_url", "image_url": {"url": d_url}, "frame_type": f_type})
+                frame_images.append({"type": "image_url", "image_url": {"url": d_url}})
         else:
             if first_frame_b64:
                 d_url = f"data:image/jpeg;base64,{compress_image_if_needed(first_frame_b64)}"
-                frame_images.append({"type": "image_url", "image_url": {"url": d_url}, "frame_type": "first_frame"})
+                frame_images.append({"type": "image_url", "image_url": {"url": d_url}})
             if last_frame_b64:
                 d_url = f"data:image/jpeg;base64,{compress_image_if_needed(last_frame_b64)}"
-                frame_images.append({"type": "image_url", "image_url": {"url": d_url}, "frame_type": "last_frame"})
+                frame_images.append({"type": "image_url", "image_url": {"url": d_url}})
 
     features = VIDEO_MODEL_FEATURES.get(model_id, {})
     if features.get("resolution"):
@@ -907,9 +889,14 @@ def generate_video_async(chat_id, prompt=None, first_frame_b64=None, last_frame_
     if frame_images:
         payload["frame_images"] = frame_images
 
-    logging.info(f"Video payload: {json.dumps({k: v for k, v in payload.items() if k != 'frame_images'}, ensure_ascii=False)}")
+    # Логирование payload без base64 для отладки
+    log_payload = {k: v for k, v in payload.items() if k != "frame_images"}
+    log_payload["frame_images_count"] = len(frame_images)
+    logging.info(f"[VIDEO PAYLOAD] {json.dumps(log_payload, ensure_ascii=False)}")
+
     try:
         resp = requests.post(OPENROUTER_VIDEO_URL, json=payload, headers=headers, timeout=60)
+        logging.info(f"[VIDEO RESPONSE] status={resp.status_code} body={resp.text[:500]}")
         if resp.status_code not in (200, 202):
             with data_lock:
                 if chat_id != ADMIN_ID:
@@ -1864,6 +1851,7 @@ def health():
 def studio_page():
     return WEBAPP_HTML
 
+# ИСПРАВЛЕНО: маппинг dur->duration для WebApp сцен
 @app.route("/api/webapp_submit_video", methods=["POST"])
 def webapp_submit_video():
     data = request.json
@@ -1873,6 +1861,10 @@ def webapp_submit_video():
 
     if not uid or not scenes:
         return jsonify({"ok": False, "error": "Неверные данные формы"}), 400
+
+    # Приводим dur к duration
+    for s in scenes:
+        s["duration"] = s.get("dur", 3)
 
     total_dur = sum(int(s.get("duration", 3)) for s in scenes)
     cost = total_dur * 5
