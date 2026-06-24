@@ -74,7 +74,7 @@ ASPECT_PROMPTS = {
     "4:3": "standard 4:3 photo composition, classic portrait or landscape ratio",
 }
 
-# --- WEB APP HTML (с выбором разрешения) ---
+# --- WEB APP HTML (фото только для первой и последней сцены) ---
 WEBAPP_HTML = '''<!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -108,6 +108,7 @@ WEBAPP_HTML = '''<!DOCTYPE html>
         .add-scene-btn { width: 100%; padding: 14px; background: rgba(255,255,255,0.08); border: none; border-radius: 12px; color: var(--text-color); font-weight: 600; font-size: 14px; cursor: pointer; }
         .main-btn { position: fixed; bottom: 16px; left: 16px; right: 16px; background: var(--btn-color); color: var(--btn-text); border: none; padding: 16px; border-radius: 14px; font-size: 15px; font-weight: 700; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.4); cursor: pointer; text-align: center; }
         .main-btn:disabled { background: #52525b; color: #9ca3af; cursor: not-allowed; }
+        .no-upload { opacity: 0.4; pointer-events: none; }
     </style>
 </head>
 <body>
@@ -142,17 +143,30 @@ WEBAPP_HTML = '''<!DOCTYPE html>
     const MAX_KLING_SEC = 18;
     function renderScenes() {
         const cont = document.getElementById('scenesContainer'); cont.innerHTML = '';
+        const totalScenes = scenes.length;
         scenes.forEach((sc, idx) => {
-            let imgHtml = sc.photo ? `<img src="data:image/jpeg;base64,${sc.photo}"><div class="del-img-badge" onclick="event.stopPropagation(); removePhoto(${idx})">✕</div>` : `<div class="empty-hint"><span style="font-size:16px">🖼</span> Прикрепить референс для Сцены ${idx+1}</div>`;
+            const isFirst = (idx === 0);
+            const isLast = (idx === totalScenes - 1);
+            const canUpload = isFirst || isLast;
+            let imgHtml = '';
+            if (!canUpload) {
+                imgHtml = `<div class="empty-hint" style="opacity:0.5">🖼 Только для первого/последнего кадра</div>`;
+            } else {
+                imgHtml = sc.photo 
+                    ? `<img src="data:image/jpeg;base64,${sc.photo}"><div class="del-img-badge" onclick="event.stopPropagation(); removePhoto(${idx})">✕</div>`
+                    : `<div class="empty-hint"><span style="font-size:16px">🖼</span> ${isFirst ? 'Начальный кадр' : 'Финальный кадр'}</div>`;
+            }
+            const clickable = canUpload ? `onclick="triggerUpload(${idx})"` : '';
             cont.innerHTML += `
                 <div class="scene-block">
-                    <div class="scene-head"><span>Сцена ${idx + 1}</span>${scenes.length > 1 ? `<span class="scene-del" onclick="delScene(${idx})">Удалить</span>` : ''}</div>
+                    <div class="scene-head"><span>Сцена ${idx + 1}</span>${totalScenes > 1 ? `<span class="scene-del" onclick="delScene(${idx})">Удалить</span>` : ''}</div>
                     <textarea placeholder="Что происходит в этой сцене..." oninput="scenes[${idx}].prompt = this.value">${sc.prompt}</textarea>
-                    <div class="scene-img-box" onclick="triggerUpload(${idx})">${imgHtml}</div>
+                    <div class="scene-img-box ${canUpload ? '' : 'no-upload'}" ${clickable}>${imgHtml}</div>
                     <div class="dur-row"><span>Длительность:</span><input type="range" min="2" max="6" value="${sc.dur}" oninput="scenes[${idx}].dur = parseInt(this.value); this.nextElementSibling.innerText = this.value + 'с'; updateSummary()"><span class="sec-num">${sc.dur}с</span></div>
                 </div>`;
         });
-        document.getElementById('addBtn').style.display = scenes.length >= 6 ? 'none' : 'block'; updateSummary();
+        document.getElementById('addBtn').style.display = totalScenes >= 6 ? 'none' : 'block';
+        updateSummary();
     }
     function addScene() { if (scenes.length < 6) { scenes.push({ prompt: '', dur: 3, photo: null }); renderScenes(); } }
     function delScene(i) { scenes.splice(i, 1); renderScenes(); }
@@ -773,7 +787,6 @@ def generate_video_async(chat_id, prompt=None, first=None, last=None, multi_prom
     headers = _build_headers()
     payload = {"model": model, "duration": dur, "aspect_ratio": asp}
 
-    # === ИСПРАВЛЕНИЕ ДЛЯ СТУДИИ: имитируем обычный текстовый запрос ===
     if multi_prompt:
         scenes_text = []
         all_photos = []
@@ -784,7 +797,7 @@ def generate_video_async(chat_id, prompt=None, first=None, last=None, multi_prom
                 all_photos.append(s["photo"])
 
         payload["prompt"] = "\n\n".join(scenes_text)
-        # frame_images: первый кадр = first_frame, последний = last_frame (если >1)
+
         frames = []
         if len(all_photos) > 0:
             first_b64 = compress_image_if_needed(all_photos[0])
@@ -794,11 +807,7 @@ def generate_video_async(chat_id, prompt=None, first=None, last=None, multi_prom
             frames.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{last_b64}"}, "frame_type": "last_frame"})
         if frames:
             payload["frame_images"] = frames
-        # Остальные фото (средние) добавим в input_references, если модель поддерживает
-        if len(all_photos) > 2 and feats.get("references"):
-            refs = [{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{compress_image_if_needed(p)}"}} for p in all_photos[1:-1]]
-            if refs:
-                payload["input_references"] = refs
+
         model_name += " [Studio]"
 
     elif prompt:
@@ -836,11 +845,26 @@ def generate_video_async(chat_id, prompt=None, first=None, last=None, multi_prom
                     user_credits[chat_id] += cost; save_data()
             bot.send_message(chat_id, f"❌ Ошибка {r.status_code}")
             return False
+
         j = r.json()
+        logging.info(f"[VIDEO] RESPONSE JSON: {json.dumps(j, ensure_ascii=False)}")
+
+        # Ошибка внутри ответа
+        if "error" in j or j.get("status") in ("failed", "cancelled", "expired"):
+            err_msg = j.get("error", j.get("status", "unknown error"))
+            logging.error(f"[VIDEO] API error: {err_msg}")
+            with data_lock:
+                if chat_id != ADMIN_ID:
+                    user_credits[chat_id] += cost
+                    save_data()
+            bot.send_message(chat_id, f"❌ Ошибка генерации: {err_msg}\n🔷 возвращены.")
+            return False
+
         if "polling_url" in j:
             m = bot.send_message(chat_id, f"🎬 <b>Генерация {model_name}</b>\n\n✅ Запрос принят. Ждём...", parse_mode="HTML")
             Thread(target=poll_video_task, args=(j["polling_url"], headers, chat_id, m.message_id, model_name), daemon=True).start()
             return True
+
         if j.get("unsigned_urls"):
             vr = requests.get(j["unsigned_urls"][0], timeout=60)
             if vr.status_code == 200 and is_valid_mp4(vr.content):
@@ -851,16 +875,29 @@ def generate_video_async(chat_id, prompt=None, first=None, last=None, multi_prom
             if is_valid_mp4(raw):
                 send_video_safe(chat_id, raw)
                 return True
+
+        if r.status_code == 202:
+            logging.error(f"[VIDEO] 202 without polling_url. Full response: {j}")
+            with data_lock:
+                if chat_id != ADMIN_ID:
+                    user_credits[chat_id] += cost
+                    save_data()
+            bot.send_message(chat_id, "❌ Ошибка: провайдер не вернул ссылку для отслеживания. 🔷 возвращены.")
+            return False
+
         with data_lock:
             if chat_id != ADMIN_ID:
-                user_credits[chat_id] += cost; save_data()
-        bot.send_message(chat_id, "❌ Пустой ответ. 🔷 возвращены.")
+                user_credits[chat_id] += cost
+                save_data()
+        bot.send_message(chat_id, "❌ Неожиданный ответ от провайдера. 🔷 возвращены.")
         return False
+
     except Exception as e:
         logging.error(f"VIDEO EXC: {e}")
         with data_lock:
             if chat_id != ADMIN_ID:
-                user_credits[chat_id] += cost; save_data()
+                user_credits[chat_id] += cost
+                save_data()
         bot.send_message(chat_id, "❌ Ошибка связи.")
         return False
 
