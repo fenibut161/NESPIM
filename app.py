@@ -247,7 +247,6 @@ VIDEO_MODEL_FEATURES = {
     "kwaivgi/kling-v3.0-pro": {"audio": True, "resolution": True, "multi_prompt": True, "references": True},
 }
 
-# --- КЭШ МОДЕЛЕЙ (ТОЛЬКО ДЛЯ ДЛИТЕЛЬНОСТИ) ---
 VIDEO_MODELS_CACHE = {}
 VIDEO_MODELS_CACHE_TIME = 0
 
@@ -724,35 +723,20 @@ def poll_video_task(polling_url, headers, chat_id, status_message_id, model_disp
                     else: stage = "Финализация и кодирование"
                     text = f"🎬 <b>{model_display}</b>\n⏳ {stage}...\n⏱ Прошло: {mins} мин\n🔄 Опрос #{attempt} (OpenRouter)"
             elif status == "completed":
-                try: bot.edit_message_text("✅ <b>Генерация завершена!</b>\n⏳ Начинаю скачивание...", chat_id, status_message_id, parse_mode="HTML")
-                except: pass
-                time.sleep(2)
-                downloaded = False
                 job_id = polling_url.rstrip("/").split("/")[-1]
-                urls = data.get("unsigned_urls", []) or []
-                for dl_attempt in range(1, 11):
-                    try:
-                        bot.edit_message_text(f"✅ Генерация завершена\n⏳ Скачиваю... (попытка {dl_attempt}/10)", chat_id, status_message_id, parse_mode="HTML")
-                    except: pass
-                    for u in urls:
-                        try:
-                            vr = requests.get(u, timeout=120, allow_redirects=True)
-                            if vr.status_code == 200 and is_valid_mp4(vr.content):
-                                if send_video_safe(chat_id, vr.content, "✅ Готово! Kling 3.0 Pro"):
-                                    downloaded = True; break
-                        except: pass
-                    if downloaded: break
-                    try:
-                        content_url = f"https://openrouter.ai/api/v1/videos/{job_id}/content"
-                        vr = requests.get(content_url, headers=headers, timeout=120)
-                        if vr.status_code == 200 and is_valid_mp4(vr.content):
-                            if send_video_safe(chat_id, vr.content, "✅ Готово! Kling 3.0 Pro"):
-                                downloaded = True; break
-                    except: pass
-                    time.sleep(min(4 + dl_attempt * 1.8, 18))
-                if not downloaded:
-                    try: bot.edit_message_text(f"⚠️ Видео готово (Job {job_id}), но скачать не удалось. Попробуйте позже.", chat_id, status_message_id)
-                    except: pass
+                urls = data.get("unsigned_urls", [])
+                # Всегда отдаём ссылку
+                if urls:
+                    link_text = f"✅ Видео готово! Скачайте по ссылке:\n{urls[0]}"
+                    if len(urls) > 1:
+                        link_text += "\n\nЗеркала:\n" + "\n".join(urls[1:])
+                else:
+                    # Запасной вариант – ссылка на контент OpenRouter
+                    link_text = f"✅ Видео готово! Скачайте по ссылке:\nhttps://openrouter.ai/api/v1/videos/{job_id}/content"
+                try:
+                    bot.edit_message_text(link_text, chat_id, status_message_id, parse_mode="HTML")
+                except:
+                    bot.send_message(chat_id, link_text, parse_mode="HTML")
                 return
             elif status in ("failed", "cancelled", "expired"):
                 err = data.get("error", status)
@@ -849,7 +833,6 @@ def generate_video_async(chat_id, prompt=None, first=None, last=None, multi_prom
         j = r.json()
         logging.info(f"[VIDEO] RESPONSE JSON: {json.dumps(j, ensure_ascii=False)}")
 
-        # Ошибка внутри ответа
         if "error" in j or j.get("status") in ("failed", "cancelled", "expired"):
             err_msg = j.get("error", j.get("status", "unknown error"))
             logging.error(f"[VIDEO] API error: {err_msg}")
@@ -866,10 +849,9 @@ def generate_video_async(chat_id, prompt=None, first=None, last=None, multi_prom
             return True
 
         if j.get("unsigned_urls"):
-            vr = requests.get(j["unsigned_urls"][0], timeout=60)
-            if vr.status_code == 200 and is_valid_mp4(vr.content):
-                send_video_safe(chat_id, vr.content)
-                return True
+            link = j["unsigned_urls"][0]
+            bot.send_message(chat_id, f"✅ Видео готово! Ссылка для скачивания:\n{link}")
+            return True
         if j.get("b64_json"):
             raw = base64.b64decode(j["b64_json"])
             if is_valid_mp4(raw):
