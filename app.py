@@ -186,56 +186,38 @@ WEBAPP_HTML = '''<!DOCTYPE html>
 </body>
 </html>'''
 
-# --- GIST SYNC (полная версия) ---
+# --- GIST SYNC ---
 def load_data():
     global user_credits, user_credit_history, user_message_count, user_last_activity, user_chat_history
     data = None
-    source = "fresh"
     if GIST_ID and GITHUB_TOKEN:
-        url = f"https://api.github.com/gists/{GIST_ID}"
-        headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
         try:
-            r = requests.get(url, headers=headers, timeout=15)
+            r = requests.get(f"https://api.github.com/gists/{GIST_ID}", headers={"Authorization": f"token {GITHUB_TOKEN}"}, timeout=15)
             if r.status_code == 200:
                 data = json.loads(r.json()["files"]["bot_data.json"]["content"])
-                source = "Gist"
-        except Exception as e:
-            logging.error(f"[LOAD] Gist error: {e}")
+        except: pass
     if not data:
         try:
-            with open(DATA_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                source = "local"
-        except:
-            data = {}
+            with open(DATA_FILE, "r") as f: data = json.load(f)
+        except: data = {}
     user_credits = defaultdict(int, {int(k): v for k, v in data.get("credits", {}).items()})
     user_credit_history = defaultdict(list, {int(k): v for k, v in data.get("history", {}).items()})
     user_message_count = defaultdict(int, {int(k): v for k, v in data.get("messages", {}).items()})
     user_last_activity = defaultdict(float, {int(k): v for k, v in data.get("last_activity", {}).items()})
     user_chat_history = defaultdict(list, {int(k): v for k, v in data.get("chat_history", {}).items()})
-    logging.info(f"[LOAD] {source}: {sum(user_credits.values())} credits")
+    logging.info(f"[LOAD] {sum(user_credits.values())} credits")
 
 def save_data():
     with data_lock:
-        snap = {
-            "credits": dict(user_credits),
-            "history": dict(user_credit_history),
-            "messages": dict(user_message_count),
-            "last_activity": dict(user_last_activity),
-            "chat_history": dict(user_chat_history),
-        }
+        snap = {"credits": dict(user_credits), "history": dict(user_credit_history), "messages": dict(user_message_count), "last_activity": dict(user_last_activity), "chat_history": dict(user_chat_history)}
     try:
-        with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump(snap, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logging.error(f"[SAVE] {e}")
+        with open(DATA_FILE, "w") as f: json.dump(snap, f, ensure_ascii=False, indent=2)
+    except: pass
     if GIST_ID and GITHUB_TOKEN:
         def _g():
             try:
-                url = f"https://api.github.com/gists/{GIST_ID}"
-                h = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
-                requests.patch(url, json={"files": {"bot_data.json": {"content": json.dumps(snap, ensure_ascii=False)}}}, headers=h, timeout=20)
-            except Exception as e: logging.error(f"[GIST SAVE] {e}")
+                requests.patch(f"https://api.github.com/gists/{GIST_ID}", json={"files": {"bot_data.json": {"content": json.dumps(snap, ensure_ascii=False)}}}, headers={"Authorization": f"token {GITHUB_TOKEN}"}, timeout=20)
+            except: pass
         Thread(target=_g, daemon=True).start()
 
 load_data()
@@ -695,7 +677,7 @@ def edit_image_seedream(prompt, image_base64):
         logging.error(f"Seedream edit error: {e}")
         return None, str(e)
 
-# ================== VIDEO (ПОЛНАЯ ВЕРСИЯ) ==================
+# ================== VIDEO ==================
 def compress_image_if_needed(b64_str, max_size=(640, 640), quality=80):
     try:
         img = Image.open(io.BytesIO(base64.b64decode(b64_str)))
@@ -921,7 +903,7 @@ def video_params_keyboard(chat_id):
     mk.add(InlineKeyboardButton("✅ Готово", callback_data="vid_params_done"))
     return mk
 
-# ================== ОБРАБОТЧИКИ ==================
+# ================== HANDLERS ==================
 @bot.message_handler(commands=["start"])
 def start_cmd(m):
     chat = m.chat.id
@@ -1061,7 +1043,7 @@ def handle_edit_prompt(m):
         bot.send_message(chat, f"❌ Ошибка редактирования: {err}. Токены 🔷 возвращены.")
     user_state.pop(chat, None)
 
-# ========== ВИДЕО (БЕЗ МУЛЬТИСЦЕНЫ ЧЕРЕЗ ДИАЛОГ) ==========
+# ========== ВИДЕО (полный функционал без мультисцены через диалог) ==========
 @bot.message_handler(func=lambda m: m.text == "🎥 Создать видео")
 def menu_video(m):
     chat = m.chat.id
@@ -1077,18 +1059,80 @@ def menu_video(m):
     bot.send_message(chat, "Выберите инструмент генерации видео:", reply_markup=mk)
 
 @bot.callback_query_handler(func=lambda c: c.data in ("vid_text", "vid_image"))
-def select_video_mode(call):
+def choose_video_mode(call):
     chat = call.message.chat.id
     bot.answer_callback_query(call.id)
-    if call.data == "vid_text":
-        user_video_mode[chat] = "text"
-        user_state[chat] = "awaiting_video_prompt"
-        bot.send_message(chat, "✏️ Введите описание видео (промпт):")
-    else:
-        user_video_mode[chat] = "image_one"
-        user_state[chat] = "awaiting_video_image_first"
-        bot.send_message(chat, "📸 Загрузите ПЕРВЫЙ кадр (начальное изображение):")
+    user_video_mode[chat] = "text" if call.data == "vid_text" else "image_one"
+    user_state[chat] = "select_video_model"
+    bot.delete_message(chat, call.message.message_id)
+    bot.send_message(chat, "🎥 Выберите видеомодель:", reply_markup=video_model_keyboard())
 
+@bot.callback_query_handler(func=lambda c: c.data.startswith("vmodel_"))
+def set_video_model(call):
+    chat = call.message.chat.id
+    bot.answer_callback_query(call.id)
+    model_key = call.data.split("_", 1)[1]
+    model_map = {
+        "seedance-2.0": "bytedance/seedance-2.0",
+        "kling-o1": "kwaivgi/kling-video-o1",
+        "kling-pro": "kwaivgi/kling-v3.0-pro",
+    }
+    if model_key in model_map:
+        user_video_model[chat] = model_map[model_key]
+        bot.delete_message(chat, call.message.message_id)
+        # Предлагаем настроить параметры или сразу перейти к вводу
+        mk = InlineKeyboardMarkup()
+        mk.add(InlineKeyboardButton("⚙️ Настроить параметры", callback_data="setup_video_params"),
+               InlineKeyboardButton("▶️ Пропустить (по умолчанию)", callback_data="skip_video_params"))
+        bot.send_message(chat, "Желаете настроить длительность, разрешение, звук?\n(по умолчанию: 5 сек, 480p, звук вкл.)", reply_markup=mk)
+
+@bot.callback_query_handler(func=lambda c: c.data in ("setup_video_params", "skip_video_params"))
+def video_params_choice(call):
+    chat = call.message.chat.id
+    bot.answer_callback_query(call.id)
+    bot.delete_message(chat, call.message.message_id)
+    if call.data == "setup_video_params":
+        user_video_params[chat] = {"duration": 5, "resolution": "480p", "audio": True, "aspect_ratio": "16:9"}
+        bot.send_message(chat, "Настройте параметры видео:", reply_markup=video_params_keyboard(chat))
+        user_state[chat] = "setting_video_params"
+    else:
+        # Параметры по умолчанию уже в user_video_params (если не заданы)
+        proceed_after_video_params(chat)
+
+def proceed_after_video_params(chat_id):
+    mode = user_video_mode.get(chat_id, "text")
+    if mode == "text":
+        user_state[chat_id] = "awaiting_video_prompt"
+        bot.send_message(chat_id, "✏️ Введите описание видео (промпт):")
+    else:
+        user_state[chat_id] = "awaiting_video_image_first"
+        bot.send_message(chat_id, "📸 Загрузите ПЕРВЫЙ кадр (начальное изображение):")
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("vid_") and user_state.get(c.message.chat.id) == "setting_video_params")
+def handle_video_param_buttons(call):
+    chat = call.message.chat.id
+    data = call.data
+    bot.answer_callback_query(call.id)
+    params = user_video_params.setdefault(chat, {})
+    if data == "vid_params_done":
+        bot.edit_message_reply_markup(chat, call.message.message_id, reply_markup=None)
+        user_state[chat] = None
+        proceed_after_video_params(chat)
+        return
+    if data.startswith("vid_dur_"):
+        params["duration"] = int(data.split("_")[-1])
+    elif data.startswith("vid_res_"):
+        params["resolution"] = data.split("_")[-1]
+    elif data.startswith("vid_aspect_"):
+        asp = data.split("_")[-2] + ":" + data.split("_")[-1]
+        params["aspect_ratio"] = asp
+    elif data == "vid_audio_true":
+        params["audio"] = True
+    elif data == "vid_audio_false":
+        params["audio"] = False
+    bot.edit_message_reply_markup(chat, call.message.message_id, reply_markup=video_params_keyboard(chat))
+
+# Загрузка кадров для фото-режима (без изменений)
 @bot.message_handler(content_types=["photo"], func=lambda m: user_state.get(m.chat.id) == "awaiting_video_image_first")
 def handle_video_first_frame(m):
     chat = m.chat.id
@@ -1134,7 +1178,7 @@ def handle_video_prompt(m):
     user_video_frames.pop(chat, None)
     Thread(target=generate_video_async, args=(chat, prompt, first_frame, last_frame), daemon=True).start()
 
-# Профиль, магазин, админка (без изменений)
+# Профиль, магазин, админка, чат (полностью)
 @bot.message_handler(func=lambda m: m.text == "👤 Профиль")
 def profile(m):
     chat = m.chat.id
@@ -1250,9 +1294,22 @@ def add_credits(m):
         except: pass
     except: bot.send_message(m.chat.id, "Формат: /addcredits <uid> <amount>")
 
+@bot.message_handler(commands=["videomodels"])
+def show_video_models(m):
+    if m.chat.id != ADMIN_ID: return
+    caps = get_video_models_capabilities(force_refresh=True)
+    text = "🎥 <b>Видео-модели (OpenRouter)</b>\n\n"
+    for mid, m in list(caps.items())[:6]:
+        text += f"<b>{m.get('name', mid)}</b>\n"
+        text += f"  • durations: {m.get('supported_durations', [])[:6]}...\n"
+        text += f"  • resolutions: {m.get('supported_resolutions', [])}\n"
+        text += f"  • aspect: {m.get('supported_aspect_ratios', [])}\n"
+        text += f"  • frame_images: {m.get('supported_frame_images', [])}\n\n"
+    bot.send_message(m.chat.id, text, parse_mode="HTML")
+
 @bot.message_handler(func=lambda m: m.text == "📖 Инструкция")
 def instruction(m):
-    bot.send_message(m.chat.id, "Инструкция: используйте кнопки меню.\nВидео создаётся через студию или по тексту/фото.")
+    bot.send_message(m.chat.id, "Инструкция: используйте кнопки меню.\nВидео создаётся через студию, по тексту или по фото.")
 
 @bot.message_handler(func=lambda m: m.text == "🔙 Главное меню")
 def back_to_main(m):
@@ -1260,7 +1317,6 @@ def back_to_main(m):
     user_state.pop(chat, None)
     bot.send_message(chat, "Главное меню:", reply_markup=main_menu_keyboard())
 
-# Чат с ИИ-агентом
 @bot.message_handler(func=lambda m: m.text == "💬 Спросить (чат)")
 def chat_mode(m):
     chat = m.chat.id
