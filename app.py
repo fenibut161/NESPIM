@@ -230,10 +230,10 @@ os.makedirs("static", exist_ok=True)
 VIDEO_MODEL_FEATURES = {
     "bytedance/seedance-2.0": {"audio": True, "resolution": True},
     "kwaivgi/kling-video-o1": {"audio": True, "resolution": True},
-    "kwaivgi/kling-v3.0-pro": {"audio": True, "resolution": True, "multi_prompt": True},
+    "kwaivgi/kling-v3.0-pro": {"audio": True, "resolution": True, "multi_prompt": True, "references": True},
 }
 
-# --- КЭШ МОДЕЛЕЙ ДЛЯ ВАЛИДАЦИИ ---
+# --- КЭШ МОДЕЛЕЙ (ТОЛЬКО ДЛЯ ДЛИТЕЛЬНОСТИ) ---
 VIDEO_MODELS_CACHE = {}
 VIDEO_MODELS_CACHE_TIME = 0
 
@@ -248,10 +248,8 @@ def get_video_models_capabilities(force_refresh=False):
             data = resp.json().get("data", [])
             VIDEO_MODELS_CACHE = {m["id"]: m for m in data}
             VIDEO_MODELS_CACHE_TIME = now
-            logging.info(f"[VIDEO MODELS] Загружено {len(VIDEO_MODELS_CACHE)} моделей")
             return VIDEO_MODELS_CACHE
-    except Exception as e:
-        logging.error(f"[VIDEO MODELS] Ошибка загрузки: {e}")
+    except: pass
     return VIDEO_MODELS_CACHE
 
 def validate_video_request(model_id, params):
@@ -263,9 +261,6 @@ def validate_video_request(model_id, params):
     if dur is not None and "supported_durations" in caps:
         if dur not in caps["supported_durations"]:
             errors.append(f"Длительность {dur}с не поддерживается")
-    # Проверки разрешения, соотношения сторон и frame_images убраны,
-    # так как они могут ложно блокировать валидные запросы.
-    # При необходимости OpenRouter API вернёт свою ошибку.
     if errors:
         return False, " | ".join(errors)
     return True, None
@@ -286,7 +281,7 @@ def _build_headers():
         "X-Title": "TelegramBot",
     }
 
-# ================== ИИ-АГЕНТ (ПОЛНАЯ ВЕРСИЯ) ==================
+# ================== ИИ-АГЕНТ (полный) ==================
 def helper_web_search(query):
     try:
         items = []
@@ -298,8 +293,7 @@ def helper_web_search(query):
                 for item in root.findall(".//item")[:3]:
                     title = item.find("title").text if item.find("title") is not None else ""
                     items.append(f"Новость: {title}")
-            except Exception:
-                pass
+            except Exception: pass
         if len(items) < 3:
             url = "https://html.duckduckgo.com/html/"
             headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
@@ -778,10 +772,10 @@ def generate_video_async(chat_id, prompt=None, first=None, last=None, multi_prom
     aud = params.get("audio", True)
     headers = _build_headers()
     payload = {"model": model, "duration": dur, "aspect_ratio": asp}
-       if multi_prompt:
-        # Преобразуем многосценовый сценарий в обычный запрос с параметрами
+
+    # === ИСПРАВЛЕНИЕ ДЛЯ СТУДИИ: имитируем обычный текстовый запрос ===
+    if multi_prompt:
         scenes_text = []
-        # Собираем все фото для frame_images (first/last) и input_references
         all_photos = []
         for i, s in enumerate(multi_prompt, 1):
             scene_dur = int(s.get("duration", s.get("dur", 3)))
@@ -790,7 +784,7 @@ def generate_video_async(chat_id, prompt=None, first=None, last=None, multi_prom
                 all_photos.append(s["photo"])
 
         payload["prompt"] = "\n\n".join(scenes_text)
-        # Добавляем frame_images: первый кадр = first_frame, последний = last_frame (если >1)
+        # frame_images: первый кадр = first_frame, последний = last_frame (если >1)
         frames = []
         if len(all_photos) > 0:
             first_b64 = compress_image_if_needed(all_photos[0])
@@ -800,13 +794,13 @@ def generate_video_async(chat_id, prompt=None, first=None, last=None, multi_prom
             frames.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{last_b64}"}, "frame_type": "last_frame"})
         if frames:
             payload["frame_images"] = frames
-        # Остальные фото (если есть) добавим в input_references, если модель поддерживает
+        # Остальные фото (средние) добавим в input_references, если модель поддерживает
         if len(all_photos) > 2 and feats.get("references"):
             refs = [{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{compress_image_if_needed(p)}"}} for p in all_photos[1:-1]]
             if refs:
                 payload["input_references"] = refs
         model_name += " [Studio]"
-        if refs: payload["input_references"] = refs
+
     elif prompt:
         payload["prompt"] = prompt
         frames = []
@@ -815,9 +809,11 @@ def generate_video_async(chat_id, prompt=None, first=None, last=None, multi_prom
         if last:
             frames.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{compress_image_if_needed(last)}"}, "frame_type": "last_frame"})
         if frames: payload["frame_images"] = frames
+
     feats = VIDEO_MODEL_FEATURES.get(model, {})
     if feats.get("resolution"): payload["resolution"] = res
     if feats.get("audio"): payload["audio"] = aud
+
     is_valid, error_msg = validate_video_request(model, {
         "duration": dur, "resolution": res, "aspect_ratio": asp,
         "frame_images": payload.get("frame_images"),
@@ -829,6 +825,7 @@ def generate_video_async(chat_id, prompt=None, first=None, last=None, multi_prom
                 user_credits[chat_id] += cost; save_data()
         bot.send_message(chat_id, f"❌ Модель не поддерживает: {error_msg}")
         return False
+
     logging.info(f"[VIDEO PAYLOAD] model={model} dur={dur}")
     try:
         r = requests.post(OPENROUTER_VIDEO_URL, json=payload, headers=headers, timeout=60)
@@ -1084,7 +1081,6 @@ def set_video_model(call):
     if model_key in model_map:
         user_video_model[chat] = model_map[model_key]
         bot.delete_message(chat, call.message.message_id)
-        # Предлагаем настроить параметры или сразу перейти к вводу
         mk = InlineKeyboardMarkup()
         mk.add(InlineKeyboardButton("⚙️ Настроить параметры", callback_data="setup_video_params"),
                InlineKeyboardButton("▶️ Пропустить (по умолчанию)", callback_data="skip_video_params"))
@@ -1100,7 +1096,6 @@ def video_params_choice(call):
         bot.send_message(chat, "Настройте параметры видео:", reply_markup=video_params_keyboard(chat))
         user_state[chat] = "setting_video_params"
     else:
-        # Параметры по умолчанию уже в user_video_params (если не заданы)
         proceed_after_video_params(chat)
 
 def proceed_after_video_params(chat_id):
@@ -1136,7 +1131,6 @@ def handle_video_param_buttons(call):
         params["audio"] = False
     bot.edit_message_reply_markup(chat, call.message.message_id, reply_markup=video_params_keyboard(chat))
 
-# Загрузка кадров для фото-режима (без изменений)
 @bot.message_handler(content_types=["photo"], func=lambda m: user_state.get(m.chat.id) == "awaiting_video_image_first")
 def handle_video_first_frame(m):
     chat = m.chat.id
@@ -1182,7 +1176,7 @@ def handle_video_prompt(m):
     user_video_frames.pop(chat, None)
     Thread(target=generate_video_async, args=(chat, prompt, first_frame, last_frame), daemon=True).start()
 
-# Профиль, магазин, админка, чат (полностью)
+# Профиль, магазин, админка, чат
 @bot.message_handler(func=lambda m: m.text == "👤 Профиль")
 def profile(m):
     chat = m.chat.id
