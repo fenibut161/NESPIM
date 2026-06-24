@@ -84,7 +84,7 @@ ASPECT_PROMPTS = {
     "4:3": "standard 4:3 photo composition, classic portrait or landscape ratio",
 }
 
-# --- TELEGRAM WEB APP HTML TEMPLATE (PER-SCENE REFERENCE UI + 18S LIMIT) ---
+# --- TELEGRAM WEB APP HTML TEMPLATE ---
 WEBAPP_HTML = """
 <!DOCTYPE html>
 <html lang="ru">
@@ -411,52 +411,54 @@ def _build_headers():
     }
 
 # ================== AGENT TOOLS HELPERS ==================
+# ИСПРАВЛЕНО: DuckDuckGo Lite теперь основной источник (стабильнее для ботов)
 def helper_web_search(query):
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Referer": "https://html.duckduckgo.com/",
+            "Referer": "https://lite.duckduckgo.com/",
         }
         items = []
 
-        # DuckDuckGo HTML
+        # 1. DuckDuckGo Lite (primary)
         try:
-            url = "https://html.duckduckgo.com/html/"
-            dr = requests.post(url, data={"q": query, "kl": "ru-ru"}, headers=headers, timeout=12)
-            if dr.status_code == 200:
-                text = dr.text
-                titles = re.findall(r'<a[^>]+class="result__a"[^>]*>(.*?)</a>', text, re.DOTALL)
-                snippets = re.findall(r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>', text, re.DOTALL)
-                for i in range(min(len(titles), len(snippets), 5)):
-                    t = re.sub(r'<.*?>', '', titles[i]).strip()
-                    s = re.sub(r'<.*?>', '', snippets[i]).strip()
+            url = "https://lite.duckduckgo.com/lite/"
+            r = requests.post(url, data={"q": query, "kl": "ru-ru"}, headers=headers, timeout=15)
+            if r.status_code == 200:
+                text = r.text
+                # Parse result blocks: link + snippet
+                rows = re.findall(
+                    r'<a[^>]+class="result-link"[^>]*>(.*?)</a>.*?<td[^>]+class="result-snippet"[^>]*>(.*?)</td>',
+                    text, re.DOTALL | re.IGNORECASE
+                )
+                for row in rows[:6]:
+                    t = re.sub(r'<.*?>', '', row[0]).strip()
+                    s = re.sub(r'<.*?>', '', row[1]).strip()
                     if t or s:
                         items.append(f"{t}: {s}" if t and s else (t or s))
         except Exception as e:
-            logging.warning(f"DuckDuckGo HTML error: {e}")
+            logging.warning(f"DDG Lite error: {e}")
 
-        # Fallback: DuckDuckGo Lite
-        if len(items) < 3:
+        # 2. DuckDuckGo HTML fallback
+        if len(items) < 2:
             try:
-                lite_url = "https://lite.duckduckgo.com/lite/"
-                dr2 = requests.post(lite_url, data={"q": query, "kl": "ru-ru"}, headers=headers, timeout=12)
-                if dr2.status_code == 200:
-                    text = dr2.text
-                    rows = re.findall(
-                        r'<tr[^>]*>.*?<td[^>]*class="result-link"[^>]*>.*?<a[^>]*>(.*?)</a>.*?</td>.*?<td[^>]*class="result-snippet"[^>]*>(.*?)</td>.*?</tr>',
-                        text, re.DOTALL | re.IGNORECASE
-                    )
-                    for row in rows[:5]:
-                        t = re.sub(r'<.*?>', '', row[0]).strip()
-                        s = re.sub(r'<.*?>', '', row[1]).strip()
-                        if t or s:
+                url = "https://html.duckduckgo.com/html/"
+                r = requests.post(url, data={"q": query, "kl": "ru-ru"}, headers=headers, timeout=15)
+                if r.status_code == 200:
+                    text = r.text
+                    titles = re.findall(r'<a[^>]+class="result__a"[^>]*>(.*?)</a>', text, re.DOTALL)
+                    snippets = re.findall(r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>', text, re.DOTALL)
+                    for i in range(min(len(titles), len(snippets), 5)):
+                        t = re.sub(r'<.*?>', '', titles[i]).strip()
+                        s = re.sub(r'<.*?>', '', snippets[i]).strip()
+                        if t or s and not any(t in it for it in items):
                             items.append(f"{t}: {s}" if t and s else (t or s))
             except Exception as e:
-                logging.warning(f"DuckDuckGo Lite error: {e}")
+                logging.warning(f"DDG HTML fallback error: {e}")
 
-        # Fallback: Google News RSS (только для новостных запросов)
+        # 3. Google News RSS (news-only fallback)
         if len(items) < 2:
             try:
                 rss_url = f"https://news.google.com/rss/search?q={urllib.parse.quote(query)}&hl=ru&gl=RU&ceid=RU:ru"
@@ -580,7 +582,10 @@ AGENT_TOOLS = [
 ]
 
 # ================== DEEPSEEK AGENT CORE ==================
+# ИСПРАВЛЕНО: добавлены fallback-парсинги JSON из markdown и inline JSON,
+# а также нативный tool_calls из OpenRouter
 def extract_deepseek_tools(choice_msg):
+    # 1. Native OpenAI format (OpenRouter standard)
     if choice_msg.get("tool_calls"):
         return choice_msg["tool_calls"], choice_msg.get("content", "")
 
@@ -588,6 +593,7 @@ def extract_deepseek_tools(choice_msg):
     if not content:
         return None, ""
 
+    # 2. DeepSeek XML-like format in content
     if "<｜tool" in content or "<|tool" in content:
         unified = content.replace("<|", "<｜").replace("|>", "｜>")
         pattern = r'<｜tool▁call▁begin｜>function<｜tool▁sep｜>(\w+)\s*\n?(\{.*?\})<｜tool▁call▁end｜>'
@@ -614,6 +620,38 @@ def extract_deepseek_tools(choice_msg):
             clean_text = re.sub(r"\b(попис|минут|секун|поиск|созда|арт|функц)$", "", clean_text).strip()
             return t_calls, clean_text
 
+    # 3. Fallback: JSON inside markdown code block (```json ... ```)
+    md_json = re.search(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', content, re.DOTALL)
+    if md_json:
+        try:
+            data = json.loads(md_json.group(1))
+            if "name" in data and "arguments" in data:
+                tc = {
+                    "id": f"call_{int(time.time()*1000)}",
+                    "type": "function",
+                    "function": {
+                        "name": data["name"],
+                        "arguments": json.dumps(data["arguments"], ensure_ascii=False)
+                    }
+                }
+                clean = content[:md_json.start()].strip()
+                return [tc], clean
+        except Exception:
+            pass
+
+    # 4. Fallback: inline JSON object with name+arguments
+    inline = re.search(r'\{\s*"name"\s*:\s*"(\w+)"\s*,\s*"arguments"\s*:\s*(\{[\s\S]*?\})\s*\}', content, re.DOTALL)
+    if inline:
+        try:
+            tc = {
+                "id": f"call_{int(time.time()*1000)}",
+                "type": "function",
+                "function": {"name": inline.group(1), "arguments": inline.group(2)}
+            }
+            return [tc], content[:inline.start()].strip()
+        except Exception:
+            pass
+
     return None, content
 
 def ask_deepseek(prompt):
@@ -627,26 +665,32 @@ def ask_deepseek(prompt):
         logging.error(f"DeepSeek exception: {e}")
     return "⚠️ Ошибка соединения"
 
+# ИСПРАВЛЕНО: добавлен tool_choice: "auto", parallel_tool_calls: False,
+# усилен system prompt, добавлено логирование raw-ответа
 def run_agent(chat_id, user_text):
     history = list(user_chat_history.get(chat_id, []))
     if len(history) > 20:
         history = history[-18:]
 
     system_prompt = (
-        "Ты — персональный ИИ-агент и кинорежиссер NESPIM в Telegram. Ты умный, вежливый, инициативный.\n"
-        "Твои возможности (инструменты):\n"
-        "1. web_search — поиск актуальной информации в интернете. Используй СРАЗУ, если юзер спрашивает о событиях после 2024 года, погоду, новости, курсы валют или актуальные факты.\n"
-        "2. fetch_webpage — чтение ссылок.\n"
-        "3. generate_image — генерация картинок (Flux Pro, 2 🔷). Если юзер просит 'нарисуй', 'сгенерируй картинку', 'арт' — вызывай СРАЗУ. aspect_ratio по умолчанию '16:9', если юзер не указал иное.\n"
-        "4. generate_multiscene_video — видео Kling 3.0 Pro (5 🔷/сек). Только после подтверждения юзера.\n"
-        "5. get_my_balance — баланс.\n"
-        "6. clear_memory — очистка памяти.\n\n"
-        "ВАЖНЕЙШИЕ ПРАВИЛА:\n"
-        "- Делай СТРОГО НЕ БОЛЕЕ ОДНОГО вызова web_search за ответ! Получив данные, сразу формируй финальный ответ.\n"
-        "- Если юзер прислал ссылку — вызови fetch_webpage ровно один раз.\n"
-        "- Если юзер просит картинку — вызывай generate_image немедленно, aspect_ratio: '16:9' (или '9:16'/'1:1' если просит вертикальную/квадратную).\n"
-        "- Для видео: сначала предложи сценарий, посчитай стоимость (5 🔷/сек), спроси подтверждение. Только потом generate_multiscene_video с confirmed_by_user=True.\n"
-        "- Отвечай понятно, емко, на русском языке."
+        "Ты — персональный ИИ-агент NESPIM в Telegram. У тебя есть инструменты (functions/tools).\n"
+        "ПРАВИЛО №1: Если пользователь спрашивает о событиях после 2024 года, погоду, курсы валют, "
+        "новости, спортивные результаты, актуальные факты или что-то, что могло измениться за последние месяцы — "
+        "ты ОБЯЗАН вызвать функцию web_search. Не отвечай из своей памяти на актуальные вопросы.\n"
+        "ПРАВИЛО №2: Если пользователь прислал ссылку — вызови fetch_webpage ровно один раз.\n"
+        "ПРАВИЛО №3: Если пользователь просит картинку ('нарисуй', 'арт', 'сгенерируй изображение') — "
+        "вызови generate_image немедленно. aspect_ratio по умолчанию '16:9'.\n"
+        "ПРАВИЛО №4: Для видео сначала предложи сценарий, посчитай стоимость (5 🔷/сек), спроси подтверждение. "
+        "Только потом generate_multiscene_video с confirmed_by_user=True.\n"
+        "ПРАВИЛО №5: Делай СТРОГО НЕ БОЛЕЕ ОДНОГО вызова инструмента за раз. Получив результат — сразу формируй финальный ответ.\n"
+        "ПРАВИЛО №6: Отвечай понятно, емко, на русском языке.\n\n"
+        "Доступные инструменты:\n"
+        "• web_search — поиск в интернете (Google/DuckDuckgo). Используй для актуальной информации.\n"
+        "• fetch_webpage — чтение ссылок.\n"
+        "• generate_image — генерация картинки (2 🔷).\n"
+        "• generate_multiscene_video — видео Kling 3.0 Pro (5 🔷/сек).\n"
+        "• get_my_balance — баланс токенов.\n"
+        "• clear_memory — очистить историю диалога."
     )
 
     messages = [{"role": "system", "content": system_prompt}] + history + [{"role": "user", "content": user_text}]
@@ -656,7 +700,9 @@ def run_agent(chat_id, user_text):
         payload = {
             "model": "deepseek/deepseek-chat",
             "messages": messages,
-            "tools": AGENT_TOOLS
+            "tools": AGENT_TOOLS,
+            "tool_choice": "auto",
+            "parallel_tool_calls": False,
         }
         try:
             r = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=60)
@@ -668,6 +714,10 @@ def run_agent(chat_id, user_text):
                 return f"❌ Ошибка API: {data['error'].get('message', 'limit')}"
 
             choice_msg = data["choices"][0]["message"]
+            
+            # ИСПРАВЛЕНО: логируем raw-ответ для отладки
+            logging.info(f"[AGENT RAW] {json.dumps(choice_msg, ensure_ascii=False)[:800]}")
+
             tool_calls, clean_content = extract_deepseek_tools(choice_msg)
 
             if tool_calls:
@@ -1148,14 +1198,14 @@ def profile(message):
     user_last_activity[chat_id] = time.time()
     credits = user_credits.get(chat_id, 0)
     history = user_credit_history.get(chat_id, [])
-    text = f"👤 **Ваш профиль**\n\n💰 Баланс: {credits} 🔷\n\n"
+    text = f"👤 <b>Ваш профиль</b>\n\n💰 Баланс: {credits} 🔷\n\n"
     if history:
-        text += "📋 **Последние операции:**\n"
+        text += "📋 <b>Последние операции:</b>\n"
         for ts, delta, reason in history[-5:]:
             sign = "+" if delta > 0 else ""
             text += f"{sign}{delta} 🔷 – {escape(reason)}\n"
     else:
-        text += "📋 **Операций пока нет.**"
+        text += "📋 <b>Операций пока нет.</b>"
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("💳 Пополнить баланс", callback_data="goto_shop"))
     bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
@@ -1172,7 +1222,7 @@ def shop(message):
     chat_id = message.chat.id
     user_last_activity[chat_id] = time.time()
     text = (
-        "🛒 **Магазин токенов 🔷**\n"
+        "🛒 <b>Магазин токенов 🔷</b>\n"
         " 🔷 за токены приобретается:\n"
         "• Генерация (Flux/Seedream) — 2 🔷\n"
         "• Редактирование фото (Flux/Seedream) — 3 🔷\n"
@@ -1181,7 +1231,7 @@ def shop(message):
         "Выберите пакет:"
     )
     for key, pkg in PACKAGES.items():
-        text += f"\n **{escape(pkg['name'])}**: {pkg['credits']} 🔷 — {pkg['price_stars']} ⭐️ / {pkg['price_rub']} ₽"
+        text += f"\n<b>{escape(pkg['name'])}</b>: {pkg['credits']} 🔷 — {pkg['price_stars']} ⭐️ / {pkg['price_rub']} ₽"
     bot.send_message(chat_id, text, parse_mode="HTML")
     markup = InlineKeyboardMarkup(row_width=2)
     for key, pkg in PACKAGES.items():
@@ -1198,7 +1248,7 @@ def menu_help(message):
     text = (
         "📖 <b>Руководство пользователя NESPIM</b>\n\n"
         "🤖 <b>1. Спросить (ИИ-Агент)</b>\n"
-        "Твой умный ассистент. Он помнит контекст диалога, гуглит свежую информацию, читает ссылки и сам рисует арты или снимать трейлеры.\n"
+        "Твой умный ассистент. Он помнит контекст диалога, гуглит свежую информацию, читает ссылки и сам рисует арты или снимает трейлеры.\n"
         "Команды агенту в чате:\n"
         "• <i>«Забудь всё»</i> — очистить память разговора.\n"
         "• <i>«Какой баланс?»</i> — проверить токены.\n"
@@ -1276,13 +1326,13 @@ def handle_card_payment(call):
     username = f"@{user.username}" if user.username else "без username"
     bot.send_message(
         chat_id,
-        f"💳 **Оплата картой — пакет «{pkg['name']}»**\n\n"
-        f"Сумма: **{pkg['price_rub']} ₽**\n"
-        f"Вы получите: **{pkg['credits']} 🔷**\n\n"
+        f"💳 <b>Оплата картой — пакет «{pkg['name']}»</b>\n\n"
+        f"Сумма: <b>{pkg['price_rub']} ₽</b>\n"
+        f"Вы получите: <b>{pkg['credits']} 🔷</b>\n\n"
         f"Переведите сумму на Т-Банк / СБЕР по номеру:\n"
-        f"`+79192329005`\n\n"
-        f"❗️ **Укажите в комментарии к переводу ваш Telegram ID:**\n"
-        f"`{chat_id}`\n\n"
+        f"<code>+79192329005</code>\n\n"
+        f"❗️ <b>Укажите в комментарии к переводу ваш Telegram ID:</b>\n"
+        f"<code>{chat_id}</code>\n\n"
         f"После перевода 🔷 начислятся вручную в течение 15 минут.",
         parse_mode="HTML",
     )
@@ -1291,10 +1341,10 @@ def handle_card_payment(call):
         markup.add(InlineKeyboardButton(f"✅ Начислить {pkg['credits']}🔷", callback_data=f"admin_grant_{chat_id}_{pkg_key}"))
         bot.send_message(
             ADMIN_ID,
-            f"💳 **Запрос на оплату картой**\n\n"
+            f"💳 <b>Запрос на оплату картой</b>\n\n"
             f"Пользователь: {username}\n"
-            f"ID: `{chat_id}`\n"
-            f"Пакет: **{pkg['name']}**\n"
+            f"ID: <code>{chat_id}</code>\n"
+            f"Пакет: <b>{pkg['name']}</b>\n"
             f"Сумма: {pkg['price_rub']} ₽\n"
             f"🔷: {pkg['credits']}",
             parse_mode="HTML",
@@ -1321,7 +1371,7 @@ def admin_grant_credits(call):
         user_credit_history[target_id].append((time.time(), pkg["credits"], f"Покупка пакета {pkg['name']} (карта)"))
         save_data()
     bot.edit_message_text(
-        f"✅ **Начислено**\nПользователю {target_id}: +{pkg['credits']} 🔷",
+        f"✅ <b>Начислено</b>\nПользователю {target_id}: +{pkg['credits']} 🔷",
         call.message.chat.id,
         call.message.message_id,
     )
@@ -1357,7 +1407,7 @@ def add_credits(message):
             save_data()
 
         current_balance = user_credits[uid]
-        confirm_text = f"✅ Начислено {amt} 🔷 пользователю `{uid}`. Текущий баланс: {current_balance} 🔷"
+        confirm_text = f"✅ Начислено {amt} 🔷 пользователю <code>{uid}</code>. Текущий баланс: {current_balance} 🔷"
         bot.send_message(message.chat.id, confirm_text, parse_mode="HTML")
 
         try:
@@ -1400,7 +1450,7 @@ def start(message):
 def send_main_menu(chat_id, text="Главное меню:"):
     bot.send_message(chat_id, text, reply_markup=main_menu_keyboard())
 
-# --- ВОССТАНОВЛЕННЫЕ БЛОКИ 1: СОЗДАНИЕ ИЗОБРАЖЕНИЙ ---
+# --- GENERATION ---
 @bot.message_handler(func=lambda m: m.text == "🖼 Создать изображение")
 def menu_generate_image(message):
     chat_id = message.chat.id
@@ -1473,7 +1523,7 @@ def handle_generate_prompt(message):
     user_generate_aspect.pop(chat_id, None)
     send_main_menu(chat_id)
 
-# --- ВОССТАНОВЛЕННЫЕ БЛОКИ 2: РЕДАКТИРОВАНИЕ ФОТО ---
+# --- EDITING ---
 @bot.message_handler(func=lambda m: m.text == "🎨 Редактировать фото")
 def menu_edit_photo(message):
     chat_id = message.chat.id
@@ -1578,7 +1628,6 @@ def handle_edit_prompt(message):
     user_face_mode.pop(chat_id, None)
     user_pending_photo.pop(chat_id, None)
 
-# --- CALLBACK: Продолжить редактирование ---
 @bot.callback_query_handler(func=lambda call: call.data == "continue_edit")
 def continue_edit_callback(call):
     chat_id = call.message.chat.id
@@ -1598,7 +1647,6 @@ def continue_edit_callback(call):
     user_state[chat_id] = "awaiting_edit_prompt"
     bot.send_message(chat_id, "🔄 Режим цепочки редактирования.\n✏️ Введите описание следующих изменений:", reply_markup=back_keyboard())
 
-# --- CALLBACK: Главное меню (inline) ---
 @bot.callback_query_handler(func=lambda call: call.data == "back_to_main")
 def back_to_main_callback(call):
     chat_id = call.message.chat.id
@@ -1614,7 +1662,7 @@ def back_to_main_callback(call):
         d.pop(chat_id, None)
     send_main_menu(chat_id)
 
-# --- ВОССТАНОВЛЕННЫЕ БЛОКИ 3: ВИДЕО ИЗ КАРТИНКИ ---
+# --- VIDEO ---
 @bot.message_handler(func=lambda m: m.text == "🎥 Создать видео")
 def menu_video(message):
     chat_id = message.chat.id
@@ -1779,7 +1827,7 @@ def handle_video_multi_prompt(message):
     )
     user_video_params[chat_id]["multi_status_msg_id"] = msg.message_id
 
-# --- ОСТАЛЬНЫЕ ХЕНДЛеры МЕНЮ ---
+# --- OTHER MENU HANDLERS ---
 @bot.message_handler(func=lambda m: m.text == "💬 Спросить (чат)")
 def menu_chat(message):
     chat_id = message.chat.id
@@ -1828,367 +1876,4 @@ def handle_text_chat(message):
     user_last_activity[chat_id] = time.time()
     state = user_state.get(chat_id)
     if state in [
-        "awaiting_generate_prompt", "awaiting_edit_photo", "awaiting_edit_prompt",
-        "awaiting_video_prompt", "awaiting_video_multi_prompt", "awaiting_multi_photos",
-        "awaiting_video_image_first", "awaiting_video_image_last", "awaiting_video_image_choice",
-        "selecting_aspect", "select_model_edit", "select_model_generate",
-    ]:
-        return
-
-    if chat_id == ADMIN_ID:
-        reply = run_agent(chat_id, message.text)
-        bot.send_message(chat_id, reply, reply_markup=back_keyboard())
-        with data_lock:
-            save_data()
-        return
-
-    with data_lock:
-        current_count = user_message_count.get(chat_id, 0)
-        next_count = current_count + 1
-        pending_charge = False
-        if next_count >= 50:
-            if user_credits.get(chat_id, 0) < CREDIT_COSTS["deepseek_session"]:
-                save_data()
-                bot.send_message(chat_id, "❌ Недостаточно 🔷 для продолжения чата. Пополните баланс в магазине 💰.")
-                return
-            pending_charge = True
-        user_message_count[chat_id] = next_count
-        save_data()
-
-    reply = run_agent(chat_id, message.text)
-
-    if pending_charge and reply and not reply.startswith("⚠️") and not reply.startswith("❌"):
-        with data_lock:
-            user_credits[chat_id] -= CREDIT_COSTS["deepseek_session"]
-            user_credit_history[chat_id].append((time.time(), -CREDIT_COSTS["deepseek_session"], "Пакет из 50 сообщений Агента"))
-            user_message_count[chat_id] = 0
-            save_data()
-        bot.send_message(chat_id, f"💬 Использовано 50 сообщений. Списано {CREDIT_COSTS['deepseek_session']} 🔷. Осталось: {user_credits[chat_id]} 🔷.")
-    elif pending_charge:
-        with data_lock:
-            user_message_count[chat_id] -= 1
-            save_data()
-        bot.send_message(chat_id, "⚠️ Ошибка получения ответа агента. 🔷 не списаны.")
-
-    bot.send_message(chat_id, reply, reply_markup=back_keyboard())
-    with data_lock:
-        save_data()
-
-@bot.message_handler(func=lambda m: True)
-def handle_other(message):
-    bot.send_message(message.chat.id, "Пожалуйста, используй кнопки меню.")
-
-# --- MULTI-SCENE LAUNCHER ---
-def launch_multi_video_task(chat_id):
-    params = user_video_params.get(chat_id, {})
-    multi_prompt = params.get("multi_prompt_data", [])
-    photos = user_video_frames.get(chat_id, {}).get("multi_list", [])
-    logging.info(f"=== LAUNCH MULTI VIDEO {chat_id}: {len(photos)} ref images ===")
-    Thread(target=generate_video_async, args=(chat_id, None, None, None, multi_prompt, photos), daemon=True).start()
-
-@bot.message_handler(content_types=["photo"], func=lambda m: user_state.get(m.chat.id) == "awaiting_multi_photos")
-def handle_multi_photos_upload(message):
-    chat_id = message.chat.id
-    user_last_activity[chat_id] = time.time()
-    file_info = bot.get_file(message.photo[-1].file_id)
-    downloaded = bot.download_file(file_info.file_path)
-    b64 = base64.b64encode(downloaded).decode("utf-8")
-    if chat_id not in user_video_frames:
-        user_video_frames[chat_id] = {}
-    photos = user_video_frames[chat_id].get("multi_list", [])
-    if len(photos) < 9:
-        photos.append(b64)
-        user_video_frames[chat_id]["multi_list"] = photos
-    count = len(photos)
-    status_msg_id = user_video_params.get(chat_id, {}).get("multi_status_msg_id")
-    markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton(f"▶️ Запустить генерацию (Загружено: {count}/9 фото)", callback_data="run_multi_video"))
-    if status_msg_id:
-        try:
-            bot.edit_message_reply_markup(chat_id, status_msg_id, reply_markup=markup)
-        except Exception:
-            pass
-    if count >= 9:
-        user_state[chat_id] = None
-        bot.send_message(chat_id, "✅ Загружен максимум (9 фото). Запускаю режиссерскую генерацию...")
-        launch_multi_video_task(chat_id)
-
-# ================== ОСТАЛЬНЫЕ CALLBACK ХЕНДЛЕРЫ ==================
-@bot.callback_query_handler(func=lambda call: call.data == "run_multi_video")
-def run_multi_video_callback(call):
-    chat_id = call.message.chat.id
-    bot.answer_callback_query(call.id)
-    bot.delete_message(chat_id, call.message.message_id)
-    user_state[chat_id] = None
-    bot.send_message(chat_id, "🎬 Отлично! Передаю сценарий и фото в Kling 3.0 Pro...")
-    launch_multi_video_task(chat_id)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("vid_dur_"))
-def set_video_duration(call):
-    chat_id = call.message.chat.id
-    bot.answer_callback_query(call.id)
-    duration = int(call.data.split("_")[-1])
-    user_video_params[chat_id]["duration"] = duration
-    bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=video_params_keyboard(chat_id))
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("vid_res_"))
-def set_video_resolution(call):
-    chat_id = call.message.chat.id
-    bot.answer_callback_query(call.id)
-    resolution = call.data.split("_")[-1]
-    user_video_params[chat_id]["resolution"] = resolution
-    bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=video_params_keyboard(chat_id))
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("vid_aspect_"))
-def set_video_aspect(call):
-    chat_id = call.message.chat.id
-    bot.answer_callback_query(call.id)
-    aspect = call.data.split("_", 2)[2].replace("_", ":")
-    user_video_params[chat_id]["aspect_ratio"] = aspect
-    bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=video_params_keyboard(chat_id))
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("vid_audio_"))
-def set_video_audio(call):
-    chat_id = call.message.chat.id
-    bot.answer_callback_query(call.id)
-    audio = call.data.split("_")[-1] == "true"
-    user_video_params[chat_id]["audio"] = audio
-    bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=video_params_keyboard(chat_id))
-
-@bot.callback_query_handler(func=lambda call: call.data == "vid_params_done")
-def video_params_done(call):
-    chat_id = call.message.chat.id
-    bot.answer_callback_query(call.id)
-    bot.delete_message(chat_id, call.message.message_id)
-    params = user_video_params.get(chat_id, {})
-    params.setdefault("duration", 5)
-    params.setdefault("resolution", "480p")
-    params.setdefault("audio", True)
-    params.setdefault("aspect_ratio", "16:9")
-    user_video_params[chat_id] = params
-
-    if user_video_mode.get(chat_id) == "multi":
-        user_state[chat_id] = "awaiting_video_multi_prompt"
-        bot.send_message(
-            chat_id,
-            "🎬 <b>Шаг 1 из 2: Сценарий (Kling 3.0 Pro)</b>\n\n"
-            "Опишите сюжет ролика по последовательным сценам. Каждую сцену пишите с новой строки в формате:\n"
-            "<code>[секунды] Описание действия в кадре</code>\n\n"
-            "📌 <b>Пример (общая сумма 10 сек):</b>\n"
-            "<code>3 Крупный план: рыцарь в сияющих доспехах смотрит на замок</code>\n"
-            "<code>4 Средний план: он достает меч из ножен под раскаты грома</code>\n"
-            "<code>3 Общий план: молния ударяет в главную башню замка</code>\n\n"
-            "✏️ <i>Введите ваш сценарий:</i>",
-            parse_mode="HTML",
-            reply_markup=back_keyboard()
-        )
-    else:
-        user_state[chat_id] = "awaiting_video_prompt"
-        bot.send_message(chat_id, "✏️ Теперь введите описание (промпт) для видео:", reply_markup=back_keyboard())
-
-# --- ОПЛАТА И СЧЕТА ---
-@bot.callback_query_handler(func=lambda call: call.data.startswith("buy_stars_"))
-def initiate_stars_payment(call):
-    chat_id = call.message.chat.id
-    bot.answer_callback_query(call.id)
-    pkg_key = call.data[10:]
-    pkg = PACKAGES.get(pkg_key)
-    if not pkg:
-        return
-    try:
-        bot.send_invoice(
-            chat_id=chat_id,
-            title=f"Пакет «{pkg['name']}»",
-            description=pkg["desc"],
-            provider_token="",
-            currency="XTR",
-            prices=[LabeledPrice(label="XTR", amount=pkg["price_stars"])],
-            start_parameter="shop",
-            invoice_payload=f"package_{pkg_key}",
-        )
-    except Exception as e:
-        logging.error(f"Invoice error: {e}")
-        bot.send_message(chat_id, f"❌ Ошибка при создании счёта: {e}")
-
-@bot.pre_checkout_query_handler(func=lambda query: True)
-def checkout(query):
-    bot.answer_pre_checkout_query(query.id, ok=True)
-
-@bot.message_handler(content_types=["successful_payment"])
-def process_payment(message):
-    chat_id = message.chat.id
-    pkg_key = message.successful_payment.invoice_payload.split("_")[1]
-    pkg = PACKAGES.get(pkg_key)
-    if pkg:
-        with data_lock:
-            user_credits[chat_id] = user_credits.get(chat_id, 0) + pkg["credits"]
-            user_credit_history[chat_id].append((time.time(), pkg["credits"], f"Покупка пакета {pkg['name']} (Stars)"))
-            save_data()
-        bot.send_message(chat_id, f"✅ Оплата прошла! Начислено {pkg['credits']} 🔷.\nБаланс: {user_credits[chat_id]} 🔷")
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("buy_card_"))
-def handle_card_payment(call):
-    chat_id = call.message.chat.id
-    bot.answer_callback_query(call.id, "Реквизиты отправлены")
-    pkg_key = call.data[9:]
-    pkg = PACKAGES.get(pkg_key)
-    if not pkg:
-        return
-    user = call.from_user
-    username = f"@{user.username}" if user.username else "без username"
-    bot.send_message(
-        chat_id,
-        f"💳 **Оплата картой — пакет «{pkg['name']}»**\n\n"
-        f"Сумма: **{pkg['price_rub']} ₽**\n"
-        f"Вы получите: **{pkg['credits']} 🔷**\n\n"
-        f"Переведите сумму на Т-Банк / СБЕР по номеру:\n"
-        f"`+79192329005`\n\n"
-        f"❗️ **Укажите в комментарии к переводу ваш Telegram ID:**\n"
-        f"`{chat_id}`\n\n"
-        f"После перевода 🔷 начислятся вручную в течение 15 минут.",
-        parse_mode="HTML",
-    )
-    try:
-        markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton(f"✅ Начислить {pkg['credits']}🔷", callback_data=f"admin_grant_{chat_id}_{pkg_key}"))
-        bot.send_message(
-            ADMIN_ID,
-            f"💳 **Запрос на оплату картой**\n\n"
-            f"Пользователь: {username}\n"
-            f"ID: `{chat_id}`\n"
-            f"Пакет: **{pkg['name']}**\n"
-            f"Сумма: {pkg['price_rub']} ₽\n"
-            f"🔷: {pkg['credits']}",
-            parse_mode="HTML",
-            reply_markup=markup,
-        )
-    except Exception as e:
-        logging.error(f"Admin notify error: {e}")
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("admin_grant_"))
-def admin_grant_credits(call):
-    bot.answer_callback_query(call.id)
-    if call.from_user.id != ADMIN_ID:
-        return
-    parts = call.data.split("_")
-    if len(parts) < 4:
-        return
-    target_id = int(parts[2])
-    pkg_key = parts[3]
-    pkg = PACKAGES.get(pkg_key)
-    if not pkg:
-        return
-    with data_lock:
-        user_credits[target_id] = user_credits.get(target_id, 0) + pkg["credits"]
-        user_credit_history[target_id].append((time.time(), pkg["credits"], f"Покупка пакета {pkg['name']} (карта)"))
-        save_data()
-    bot.edit_message_text(
-        f"✅ **Начислено**\nПользователю {target_id}: +{pkg['credits']} 🔷",
-        call.message.chat.id,
-        call.message.message_id,
-    )
-    try:
-        bot.send_message(target_id, f"🎉 Администратор начислил вам {pkg['credits']} 🔷 (пакет «{pkg['name']}»).\nВаш баланс: {user_credits[target_id]} 🔷")
-    except Exception as e:
-        logging.error(f"Не удалось уведомить {target_id}: {e}")
-
-# ================== WEBHOOK & RUN ==================
-@app.route("/")
-def index():
-    return "Bot is running"
-
-@app.route("/health")
-def health():
-    return "OK", 200
-
-@app.route("/studio")
-def studio_page():
-    return WEBAPP_HTML
-
-@app.route("/api/webapp_submit_video", methods=["POST"])
-def webapp_submit_video():
-    data = request.json
-    uid = int(data.get("user_id", 0))
-    scenes = data.get("scenes", [])
-    asp = data.get("aspect_ratio", "16:9")
-
-    if not uid or not scenes:
-        return jsonify({"ok": False, "error": "Неверные данные формы"}), 400
-
-    total_dur = sum(int(s.get("duration", 3)) for s in scenes)
-    cost = total_dur * 5
-
-    with data_lock:
-        if uid != ADMIN_ID and user_credits.get(uid, 0) < cost:
-            return jsonify({"ok": False, "error": f"Недостаточно токенов 🔷. Нужно {cost}, у вас {user_credits.get(uid, 0)}."}), 400
-        if uid != ADMIN_ID:
-            user_credits[uid] -= cost
-            user_credit_history[uid].append((time.time(), -cost, f"Студия Kling {total_dur}с"))
-            save_data()
-
-    try:
-        bot.send_message(
-            uid,
-            f"🎬 <b>Заказ из Визуальной Студии принят!</b>\nСюжет из {len(scenes)} кадров ({total_dur} сек).\nЗапускаю рендер Kling 3.0 Pro...",
-            parse_mode="HTML"
-        )
-    except Exception as e:
-        logging.error(f"Не удалось отправить уведомление юзеру {uid}: {e}")
-
-    user_video_model[uid] = "kwaivgi/kling-v3.0-pro"
-    user_video_params[uid] = {"duration": total_dur, "aspect_ratio": asp, "audio": True}
-
-    Thread(target=generate_video_async, args=(uid, None, None, None, scenes), daemon=True).start()
-    return jsonify({"ok": True})
-
-@app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
-def webhook():
-    if request.is_json:
-        try:
-            json_data = request.get_json()
-            update = telebot.types.Update.de_json(json_data)
-            Thread(target=bot.process_new_updates, args=([update],), daemon=True).start()
-            return "OK", 200
-        except Exception as e:
-            logging.error(f"Webhook processing error: {e}")
-            return "Bad Request", 400
-    return "Forbidden", 403
-
-@app.route("/static/<path:filename>")
-def static_files(filename):
-    return send_from_directory("static", filename)
-
-def set_webhook():
-    try:
-        del_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteWebhook?drop_pending_updates=true"
-        r = requests.get(del_url, timeout=10)
-        logging.info(f"deleteWebhook: {r.status_code} | {r.text}")
-
-        time.sleep(1)
-
-        host = os.getenv("RENDER_EXTERNAL_HOSTNAME")
-        if not host:
-            host = os.getenv("WEBHOOK_HOST")
-
-        if not host:
-            logging.error("ERROR: RENDER_EXTERNAL_HOSTNAME or WEBHOOK_HOST not set!")
-            return
-
-        webhook_url = f"https://{host}/{TELEGRAM_TOKEN}"
-        set_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook?url={webhook_url}"
-        r = requests.get(set_url, timeout=10)
-        logging.info(f"setWebhook: {r.status_code} | {r.text}")
-
-        if r.status_code == 200 and r.json().get("ok"):
-            logging.info("✅ Webhook OK")
-        else:
-            logging.error("❌ Webhook FAILED")
-    except Exception as e:
-        logging.error(f"❌ Webhook exception: {e}")
-
-Thread(target=set_webhook, daemon=True).start()
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    logging.info(f"Starting Flask on port {port}...")
-    app.run(host="0.0.0.0", port=port)
+        "
