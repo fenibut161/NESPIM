@@ -851,7 +851,7 @@ def generate_video_async(chat_id, prompt=None, first_frame_b64=None, last_frame_
     with data_lock:
         if chat_id != ADMIN_ID:
             if user_credits.get(chat_id, 0) < cost:
-                bot.send_message(chat_id, f"❌ Недостаточно 🔷. Нужно {cost}, у вас {user_credits.get(chat_id, 0)}.")
+                bot.send_message(chat_id, f"❌ Недостаточно 🔷. Нужно {cost}, у вас {user_credits.get(chat_id, 0)}. Пополните баланс в магазине 💰.")
                 return False
             user_credits[chat_id] -= cost
             user_credit_history[chat_id].append((time.time(), -cost, f"Видео {duration}с"))
@@ -870,55 +870,60 @@ def generate_video_async(chat_id, prompt=None, first_frame_b64=None, last_frame_
     }
     model_display = model_names.get(model_id, model_id)
     headers = _build_headers()
-    payload = {"model": model_id}
+    payload = {"model": model_id, "duration": duration, "aspect_ratio": aspect}
 
-    # Не добавляем duration/aspect_ratio для multi_prompt – они берутся из сцен
+    frame_images = []
+    input_references = []
+
     if multi_prompt:
         clean_mp = []
-        for idx, item in enumerate(multi_prompt):
+        for item in multi_prompt:
             sc_dict = {"prompt": item.get("prompt", ""), "duration": int(item.get("duration", 3))}
+            clean_mp.append(sc_dict)
             if item.get("photo"):
                 d_url = f"data:image/jpeg;base64,{compress_image_if_needed(item['photo'])}"
-                sc_dict["image"] = d_url
-            clean_mp.append(sc_dict)
+                input_references.append({"type": "image_url", "image_url": {"url": d_url}})
         payload["multi_prompt"] = clean_mp
         model_display += " [Мультисцена Studio]"
-    else:
-        payload["duration"] = duration
-        payload["aspect_ratio"] = aspect
+    elif prompt:
         payload["prompt"] = prompt
         if multi_photos_b64 and isinstance(multi_photos_b64, list):
-            frame_images = []
             for idx, b64 in enumerate(multi_photos_b64[:9]):
                 d_url = f"data:image/jpeg;base64,{compress_image_if_needed(b64)}"
-                f_type = "first_frame" if idx == 0 else ("last_frame" if idx == len(multi_photos_b64)-1 and len(multi_photos_b64)>1 else "reference")
-                frame_images.append({"type": "image_url", "image_url": {"url": d_url}, "frame_type": f_type})
-            if frame_images:
-                payload["frame_images"] = frame_images
+                if idx == 0:
+                    frame_images.append({"type": "image_url", "image_url": {"url": d_url}, "frame_type": "first_frame"})
+                elif idx == len(multi_photos_b64) - 1 and len(multi_photos_b64) > 1:
+                    frame_images.append({"type": "image_url", "image_url": {"url": d_url}, "frame_type": "last_frame"})
+                else:
+                    input_references.append({"type": "image_url", "image_url": {"url": d_url}})
         else:
-            frame_images = []
             if first_frame_b64:
                 d_url = f"data:image/jpeg;base64,{compress_image_if_needed(first_frame_b64)}"
                 frame_images.append({"type": "image_url", "image_url": {"url": d_url}, "frame_type": "first_frame"})
             if last_frame_b64:
                 d_url = f"data:image/jpeg;base64,{compress_image_if_needed(last_frame_b64)}"
                 frame_images.append({"type": "image_url", "image_url": {"url": d_url}, "frame_type": "last_frame"})
-            if frame_images:
-                payload["frame_images"] = frame_images
 
     features = VIDEO_MODEL_FEATURES.get(model_id, {})
     if features.get("resolution"):
         payload["resolution"] = resolution
     if features.get("audio"):
-        payload["audio"] = audio
+        payload["generate_audio"] = audio
 
-    logging.info(f"Video payload (без frame_images): {json.dumps({k: v for k, v in payload.items() if k != 'frame_images'}, ensure_ascii=False)}")
+    if frame_images:
+        payload["frame_images"] = frame_images
+    if input_references:
+        payload["input_references"] = input_references
+
+    log_payload = {k: v for k, v in payload.items() if k not in ("frame_images", "input_references")}
+    log_payload["frame_images_count"] = len(frame_images)
+    log_payload["input_references_count"] = len(input_references)
+    logging.info(f"[VIDEO PAYLOAD] {json.dumps(log_payload, ensure_ascii=False)}")
 
     try:
         resp = requests.post(OPENROUTER_VIDEO_URL, json=payload, headers=headers, timeout=60)
+        logging.info(f"[VIDEO RESPONSE] status={resp.status_code} body={resp.text[:500]}")
         if resp.status_code not in (200, 202):
-            # Детальное логирование ошибки
-            logging.error(f"Video API error {resp.status_code}: {resp.text[:1000]}")
             with data_lock:
                 if chat_id != ADMIN_ID:
                     user_credits[chat_id] = user_credits.get(chat_id, 0) + cost
@@ -955,7 +960,7 @@ def generate_video_async(chat_id, prompt=None, first_frame_b64=None, last_frame_
                 user_credit_history[chat_id].append((time.time(), cost, "Возврат за видео (ошибка)"))
                 save_data()
         bot.send_message(chat_id, "❌ Ошибка связи. 🔷 возвращены.")
-    return False
+        return False
 
 
 def main_menu_keyboard():
