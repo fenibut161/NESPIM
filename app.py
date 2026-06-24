@@ -945,25 +945,26 @@ def generate_video_async(chat_id, prompt=None, first_frame_b64=None, last_frame_
     }
     model_display = model_names.get(model_id, model_id)
     headers = _build_headers()
-    payload = {"model": model_id}   # ← начинаем с минимума
+    payload = {"model": model_id}          # начинаем с минимума
 
     frame_images = []
 
     if multi_prompt:
+        # Мультисценарий – передаём только model и multi_prompt
         clean_mp = []
         for idx, item in enumerate(multi_prompt):
-            dur = int(item.get("duration", item.get("dur", 3)))  # поддержка поля 'dur' из студии
+            dur = int(item.get("duration", item.get("dur", 3)))  # поддержка 'dur' из студии
             sc_dict = {"prompt": item.get("prompt", ""), "duration": dur}
             if item.get("photo"):
                 d_url = f"data:image/jpeg;base64,{compress_image_if_needed(item['photo'])}"
                 sc_dict["image"] = d_url
-                # НЕ добавляем в frame_images – всё внутри multi_prompt
+                # НЕ добавляем в frame_images! Всё внутри multi_prompt.
             clean_mp.append(sc_dict)
         payload["multi_prompt"] = clean_mp
         model_display += " [Мультисцена Studio]"
         # для multi_prompt НЕ передаём duration, aspect_ratio, resolution, audio, frame_images
     else:
-        # Обычный режим
+        # Обычный режим – добавляем duration, aspect_ratio, prompt и кадры
         payload["duration"] = duration
         payload["aspect_ratio"] = aspect
         payload["prompt"] = prompt
@@ -988,12 +989,10 @@ def generate_video_async(chat_id, prompt=None, first_frame_b64=None, last_frame_
         if features.get("audio"):
             payload["audio"] = audio
 
-    # Логирование перед отправкой
     logging.info(f"Video payload (без frame_images): {json.dumps({k: v for k, v in payload.items() if k != 'frame_images'}, ensure_ascii=False)}")
     try:
         resp = requests.post(OPENROUTER_VIDEO_URL, json=payload, headers=headers, timeout=60)
         if resp.status_code not in (200, 202):
-            # Детальный лог ошибки
             logging.error(f"Video API error {resp.status_code}: {resp.text[:1000]}")
             with data_lock:
                 if chat_id != ADMIN_ID:
