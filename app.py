@@ -263,20 +263,9 @@ def validate_video_request(model_id, params):
     if dur is not None and "supported_durations" in caps:
         if dur not in caps["supported_durations"]:
             errors.append(f"Длительность {dur}с не поддерживается")
-    res = params.get("resolution")
-    if res and "supported_resolutions" in caps:
-        if res not in caps["supported_resolutions"]:
-            errors.append(f"Разрешение {res} не поддерживается")
-    asp = params.get("aspect_ratio")
-    if asp and "supported_aspect_ratios" in caps:
-        if asp not in caps["supported_aspect_ratios"]:
-            errors.append(f"Формат {asp} не поддерживается")
-    if params.get("frame_images") and "supported_frame_images" in caps:
-        needed = [f.get("frame_type") for f in params.get("frame_images", [])]
-        supported = caps.get("supported_frame_images", [])
-        for ft in needed:
-            if ft and ft not in supported:
-                errors.append(f"Кадр '{ft}' не поддерживается")
+    # Проверки разрешения, соотношения сторон и frame_images убраны,
+    # так как они могут ложно блокировать валидные запросы.
+    # При необходимости OpenRouter API вернёт свою ошибку.
     if errors:
         return False, " | ".join(errors)
     return True, None
