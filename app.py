@@ -1876,4 +1876,261 @@ def handle_text_chat(message):
     user_last_activity[chat_id] = time.time()
     state = user_state.get(chat_id)
     if state in [
-        "
+        "awaiting_generate_prompt", "awaiting_edit_photo", "awaiting_edit_prompt",
+        "awaiting_video_prompt", "awaiting_video_multi_prompt", "awaiting_multi_photos",
+        "awaiting_video_image_first", "awaiting_video_image_last", "awaiting_video_image_choice",
+        "selecting_aspect", "select_model_edit", "select_model_generate",
+    ]:
+        return
+
+    if chat_id == ADMIN_ID:
+        reply = run_agent(chat_id, message.text)
+        bot.send_message(chat_id, reply, reply_markup=back_keyboard())
+        with data_lock:
+            save_data()
+        return
+
+    with data_lock:
+        current_count = user_message_count.get(chat_id, 0)
+        next_count = current_count + 1
+        pending_charge = False
+        if next_count >= 50:
+            if user_credits.get(chat_id, 0) < CREDIT_COSTS["deepseek_session"]:
+                save_data()
+                bot.send_message(chat_id, "❌ Недостаточно 🔷 для продолжения чата. Пополните баланс в магазине 💰.")
+                return
+            pending_charge = True
+        user_message_count[chat_id] = next_count
+        save_data()
+
+    reply = run_agent(chat_id, message.text)
+
+    if pending_charge and reply and not reply.startswith("⚠️") and not reply.startswith("❌"):
+        with data_lock:
+            user_credits[chat_id] -= CREDIT_COSTS["deepseek_session"]
+            user_credit_history[chat_id].append((time.time(), -CREDIT_COSTS["deepseek_session"], "Пакет из 50 сообщений Агента"))
+            user_message_count[chat_id] = 0
+            save_data()
+        bot.send_message(chat_id, f"💬 Использовано 50 сообщений. Списано {CREDIT_COSTS['deepseek_session']} 🔷. Осталось: {user_credits[chat_id]} 🔷.")
+    elif pending_charge:
+        with data_lock:
+            user_message_count[chat_id] -= 1
+            save_data()
+        bot.send_message(chat_id, "⚠️ Ошибка получения ответа агента. 🔷 не списаны.")
+
+    bot.send_message(chat_id, reply, reply_markup=back_keyboard())
+    with data_lock:
+        save_data()
+
+@bot.message_handler(func=lambda m: True)
+def handle_other(message):
+    bot.send_message(message.chat.id, "Пожалуйста, используй кнопки меню.")
+
+# --- MULTI-SCENE LAUNCHER ---
+def launch_multi_video_task(chat_id):
+    params = user_video_params.get(chat_id, {})
+    multi_prompt = params.get("multi_prompt_data", [])
+    photos = user_video_frames.get(chat_id, {}).get("multi_list", [])
+    logging.info(f"=== LAUNCH MULTI VIDEO {chat_id}: {len(photos)} ref images ===")
+    Thread(target=generate_video_async, args=(chat_id, None, None, None, multi_prompt, photos), daemon=True).start()
+
+@bot.message_handler(content_types=["photo"], func=lambda m: user_state.get(m.chat.id) == "awaiting_multi_photos")
+def handle_multi_photos_upload(message):
+    chat_id = message.chat.id
+    user_last_activity[chat_id] = time.time()
+    file_info = bot.get_file(message.photo[-1].file_id)
+    downloaded = bot.download_file(file_info.file_path)
+    b64 = base64.b64encode(downloaded).decode("utf-8")
+    if chat_id not in user_video_frames:
+        user_video_frames[chat_id] = {}
+    photos = user_video_frames[chat_id].get("multi_list", [])
+    if len(photos) < 9:
+        photos.append(b64)
+        user_video_frames[chat_id]["multi_list"] = photos
+    count = len(photos)
+    status_msg_id = user_video_params.get(chat_id, {}).get("multi_status_msg_id")
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton(f"▶️ Запустить генерацию (Загружено: {count}/9 фото)", callback_data="run_multi_video"))
+    if status_msg_id:
+        try:
+            bot.edit_message_reply_markup(chat_id, status_msg_id, reply_markup=markup)
+        except Exception:
+            pass
+    if count >= 9:
+        user_state[chat_id] = None
+        bot.send_message(chat_id, "✅ Загружен максимум (9 фото). Запускаю режиссерскую генерацию...")
+        launch_multi_video_task(chat_id)
+
+# ================== OTHER CALLBACK HANDLERS ==================
+@bot.callback_query_handler(func=lambda call: call.data == "run_multi_video")
+def run_multi_video_callback(call):
+    chat_id = call.message.chat.id
+    bot.answer_callback_query(call.id)
+    bot.delete_message(chat_id, call.message.message_id)
+    user_state[chat_id] = None
+    bot.send_message(chat_id, "🎬 Отлично! Передаю сценарий и фото в Kling 3.0 Pro...")
+    launch_multi_video_task(chat_id)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("vid_dur_"))
+def set_video_duration(call):
+    chat_id = call.message.chat.id
+    bot.answer_callback_query(call.id)
+    duration = int(call.data.split("_")[-1])
+    user_video_params[chat_id]["duration"] = duration
+    bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=video_params_keyboard(chat_id))
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("vid_res_"))
+def set_video_resolution(call):
+    chat_id = call.message.chat.id
+    bot.answer_callback_query(call.id)
+    resolution = call.data.split("_")[-1]
+    user_video_params[chat_id]["resolution"] = resolution
+    bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=video_params_keyboard(chat_id))
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("vid_aspect_"))
+def set_video_aspect(call):
+    chat_id = call.message.chat.id
+    bot.answer_callback_query(call.id)
+    aspect = call.data.split("_", 2)[2].replace("_", ":")
+    user_video_params[chat_id]["aspect_ratio"] = aspect
+    bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=video_params_keyboard(chat_id))
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("vid_audio_"))
+def set_video_audio(call):
+    chat_id = call.message.chat.id
+    bot.answer_callback_query(call.id)
+    audio = call.data.split("_")[-1] == "true"
+    user_video_params[chat_id]["audio"] = audio
+    bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=video_params_keyboard(chat_id))
+
+@bot.callback_query_handler(func=lambda call: call.data == "vid_params_done")
+def video_params_done(call):
+    chat_id = call.message.chat.id
+    bot.answer_callback_query(call.id)
+    bot.delete_message(chat_id, call.message.message_id)
+    params = user_video_params.get(chat_id, {})
+    params.setdefault("duration", 5)
+    params.setdefault("resolution", "480p")
+    params.setdefault("audio", True)
+    params.setdefault("aspect_ratio", "16:9")
+    user_video_params[chat_id] = params
+
+    if user_video_mode.get(chat_id) == "multi":
+        user_state[chat_id] = "awaiting_video_multi_prompt"
+        bot.send_message(
+            chat_id,
+            "🎬 <b>Шаг 1 из 2: Сценарий (Kling 3.0 Pro)</b>\n\n"
+            "Опишите сюжет ролика по последовательным сценам. Каждую сцену пишите с новой строки в формате:\n"
+            "<code>[секунды] Описание действия в кадре</code>\n\n"
+            "📌 <b>Пример (общая сумма 10 сек):</b>\n"
+            "<code>3 Крупный план: рыцарь в сияющих доспехах смотрит на замок</code>\n"
+            "<code>4 Средний план: он достает меч из ножен под раскаты грома</code>\n"
+            "<code>3 Общий план: молния ударяет в главную башню замка</code>\n\n"
+            "✏️ <i>Введите ваш сценарий:</i>",
+            parse_mode="HTML",
+            reply_markup=back_keyboard()
+        )
+    else:
+        user_state[chat_id] = "awaiting_video_prompt"
+        bot.send_message(chat_id, "✏️ Теперь введите описание (промпт) для видео:", reply_markup=back_keyboard())
+
+# ================== WEBHOOK & RUN ==================
+@app.route("/")
+def index():
+    return "Bot is running"
+
+@app.route("/health")
+def health():
+    return "OK", 200
+
+@app.route("/studio")
+def studio_page():
+    return WEBAPP_HTML
+
+@app.route("/api/webapp_submit_video", methods=["POST"])
+def webapp_submit_video():
+    data = request.json
+    uid = int(data.get("user_id", 0))
+    scenes = data.get("scenes", [])
+    asp = data.get("aspect_ratio", "16:9")
+
+    if not uid or not scenes:
+        return jsonify({"ok": False, "error": "Неверные данные формы"}), 400
+
+    total_dur = sum(int(s.get("duration", 3)) for s in scenes)
+    cost = total_dur * 5
+
+    with data_lock:
+        if uid != ADMIN_ID and user_credits.get(uid, 0) < cost:
+            return jsonify({"ok": False, "error": f"Недостаточно токенов 🔷. Нужно {cost}, у вас {user_credits.get(uid, 0)}."}), 400
+        if uid != ADMIN_ID:
+            user_credits[uid] -= cost
+            user_credit_history[uid].append((time.time(), -cost, f"Студия Kling {total_dur}с"))
+            save_data()
+
+    try:
+        bot.send_message(
+            uid,
+            f"🎬 <b>Заказ из Визуальной Студии принят!</b>\nСюжет из {len(scenes)} кадров ({total_dur} сек).\nЗапускаю рендер Kling 3.0 Pro...",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logging.error(f"Не удалось отправить уведомление юзеру {uid}: {e}")
+
+    user_video_model[uid] = "kwaivgi/kling-v3.0-pro"
+    user_video_params[uid] = {"duration": total_dur, "aspect_ratio": asp, "audio": True}
+
+    Thread(target=generate_video_async, args=(uid, None, None, None, scenes), daemon=True).start()
+    return jsonify({"ok": True})
+
+@app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
+def webhook():
+    if request.is_json:
+        try:
+            json_data = request.get_json()
+            update = telebot.types.Update.de_json(json_data)
+            Thread(target=bot.process_new_updates, args=([update],), daemon=True).start()
+            return "OK", 200
+        except Exception as e:
+            logging.error(f"Webhook processing error: {e}")
+            return "Bad Request", 400
+    return "Forbidden", 403
+
+@app.route("/static/<path:filename>")
+def static_files(filename):
+    return send_from_directory("static", filename)
+
+def set_webhook():
+    try:
+        del_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteWebhook?drop_pending_updates=true"
+        r = requests.get(del_url, timeout=10)
+        logging.info(f"deleteWebhook: {r.status_code} | {r.text}")
+
+        time.sleep(1)
+
+        host = os.getenv("RENDER_EXTERNAL_HOSTNAME")
+        if not host:
+            host = os.getenv("WEBHOOK_HOST")
+
+        if not host:
+            logging.error("ERROR: RENDER_EXTERNAL_HOSTNAME or WEBHOOK_HOST not set!")
+            return
+
+        webhook_url = f"https://{host}/{TELEGRAM_TOKEN}"
+        set_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook?url={webhook_url}"
+        r = requests.get(set_url, timeout=10)
+        logging.info(f"setWebhook: {r.status_code} | {r.text}")
+
+        if r.status_code == 200 and r.json().get("ok"):
+            logging.info("✅ Webhook OK")
+        else:
+            logging.error("❌ Webhook FAILED")
+    except Exception as e:
+        logging.error(f"❌ Webhook exception: {e}")
+
+Thread(target=set_webhook, daemon=True).start()
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8080))
+    logging.info(f"Starting Flask on port {port}...")
+    app.run(host="0.0.0.0", port=port)
