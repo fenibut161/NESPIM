@@ -354,40 +354,118 @@ def send_video_safe(chat_id, data, caption="✅ Ваше видео готово
             f = io.BytesIO(data); f.name = "video.mp4"
             bot.send_document(chat_id, f, caption="Видео (файл)")
             return True
-        except: return False
+        except:
+            return False
 
-def poll_video_task(polling_url, headers, chat_id, msg_id, model_display):
-    for i in range(90):
-        time.sleep(10)
+def poll_video_task(polling_url, headers, chat_id, status_message_id, model_display=""):
+    """Красивый прогресс (как нравится пользователю).
+    После completed — промежуточный прогресс скачивания с попытками.
+    """
+    start_time = time.time()
+    last_update = 0
+
+    for attempt in range(1, 120):
+        time.sleep(8)
         try:
-            r = requests.get(polling_url, headers=headers, timeout=30)
-            if r.status_code != 200: continue
-            d = r.json()
-            st = d.get("status")
-            pr = d.get("progress", 0)
-            if pr: 
-                try: bot.edit_message_text(f"🎬 {model_display}: {int(pr)}%", chat_id, msg_id)
-                except: pass
-            if st == "completed":
-                try: bot.edit_message_text("✅ Скачиваю...", chat_id, msg_id)
-                except: pass
-                if d.get("unsigned_urls"):
-                    vr = requests.get(d["unsigned_urls"][0], timeout=60)
-                    if vr.status_code == 200 and is_valid_mp4(vr.content):
-                        send_video_safe(chat_id, vr.content)
-                        return
-                job = polling_url.rstrip("/").split("/")[-1]
-                vr = requests.get(f"https://openrouter.ai/api/v1/videos/{job}/content", headers=headers, timeout=60)
-                if vr.status_code == 200 and is_valid_mp4(vr.content):
-                    send_video_safe(chat_id, vr.content)
-                    return
-                bot.send_message(chat_id, "❌ Видео повреждено")
+            resp = requests.get(polling_url, headers=headers, timeout=25)
+            if resp.status_code != 200:
+                continue
+            data = resp.json()
+            status = data.get("status", "unknown")
+            progress = data.get("progress")
+            elapsed = int(time.time() - start_time)
+            mins = elapsed // 60
+
+            if status in ("processing", "pending", "running", "queued"):
+                if progress and progress > 5:
+                    filled = int(progress / 10)
+                    bar = "█" * filled + "░" * (10 - filled)
+                    text = f"🎬 <b>{model_display}</b>\n📊 Прогресс: <b>{int(progress)}%</b>\n[{bar}]\n⏱ {mins} мин ({elapsed} сек)\n🔄 #{attempt}"
+                else:
+                    stage = "Подготовка" if mins < 1 else "Анализ референсов" if mins < 3 else "Генерация движения" if mins < 5 else "Рендеринг" if mins < 8 else "Финализация"
+                    text = f"🎬 <b>{model_display}</b>\n⏳ {stage}...\n⏱ {mins} мин\n🔄 #{attempt}"
+
+            elif status == "completed":
+                job_id = polling_url.rstrip("/").split("/")[-1]
+                try:
+                    bot.edit_message_text("✅ <b>Генерация завершена!</b>\n⏳ Начинаю скачивание...", chat_id, status_message_id, parse_mode="HTML")
+                except:
+                    pass
+                time.sleep(2)
+
+                downloaded = False
+                urls = data.get("unsigned_urls", [])
+
+                for dl in range(1, 10):
+                    try:
+                        try:
+                            bot.edit_message_text(
+                                f"✅ Генерация завершена\n⏳ Скачиваю с OpenRouter... (попытка {dl}/9)\nJob: {job_id}",
+                                chat_id, status_message_id, parse_mode="HTML"
+                            )
+                        except:
+                            pass
+
+                        for u in urls:
+                            vr = requests.get(u, timeout=120, allow_redirects=True)
+                            if vr.status_code == 200 and is_valid_mp4(vr.content):
+                                send_video_safe(chat_id, vr.content, "✅ Готово! Kling 3.0 Pro")
+                                logging.info(f"[DOWNLOAD] success unsigned dl={dl}")
+                                downloaded = True
+                                break
+                        if downloaded:
+                            break
+
+                        content_url = f"https://openrouter.ai/api/v1/videos/{job_id}/content"
+                        vr = requests.get(content_url, headers=headers, timeout=120)
+                        if vr.status_code == 200 and is_valid_mp4(vr.content):
+                            send_video_safe(chat_id, vr.content, "✅ Готово! Kling 3.0 Pro")
+                            logging.info(f"[DOWNLOAD] success content dl={dl}")
+                            downloaded = True
+                            break
+
+                        time.sleep(6)
+                    except Exception as e:
+                        logging.error(f"[DOWNLOAD] dl={dl} error: {e}")
+                        time.sleep(6)
+
+                if not downloaded:
+                    try:
+                        bot.edit_message_text(
+                            f"⚠️ Видео готово на сервере (complete).\nJob: {job_id}\n"
+                            "Скачать не удалось после нескольких попыток.\nНапишите /start через 2-3 минуты.",
+                            chat_id, status_message_id
+                        )
+                    except:
+                        bot.send_message(chat_id, f"⚠️ Видео готово (Job {job_id}), но не скачалось.")
                 return
-            if st in ("failed", "cancelled", "expired"):
-                bot.send_message(chat_id, f"❌ Ошибка: {st}")
+
+            elif status in ("failed", "cancelled", "expired"):
+                err = data.get("error", status)
+                try:
+                    bot.edit_message_text(f"❌ Ошибка: {err}", chat_id, status_message_id)
+                except:
+                    bot.send_message(chat_id, f"❌ Ошибка: {err}")
                 return
-        except: pass
-    bot.send_message(chat_id, "⏰ Время вышло")
+
+            else:
+                text = f"🎬 {model_display}\nСтатус: {status}\n⏱ {mins} мин"
+
+            now = time.time()
+            if now - last_update > 11:
+                try:
+                    bot.edit_message_text(text, chat_id, status_message_id, parse_mode="HTML")
+                    last_update = now
+                except:
+                    pass
+        except Exception as e:
+            logging.warning(f"[POLL] attempt {attempt}: {e}")
+            continue
+
+    try:
+        bot.edit_message_text("⏰ Таймаут (~15 мин). Напишите /start позже.", chat_id, status_message_id)
+    except:
+        bot.send_message(chat_id, "⏰ Таймаут генерации.")
 
 def generate_video_async(chat_id, prompt=None, first=None, last=None, multi_prompt=None, photos=None):
     params = user_video_params.get(chat_id, {})
@@ -475,7 +553,7 @@ def generate_video_async(chat_id, prompt=None, first=None, last=None, multi_prom
                 send_video_safe(chat_id, vr.content)
                 return True
 
-        if j.get("b64_json"):
+        if "b64_json" in j:
             raw = base64.b64decode(j["b64_json"])
             if is_valid_mp4(raw):
                 send_video_safe(chat_id, raw)
@@ -494,10 +572,9 @@ def generate_video_async(chat_id, prompt=None, first=None, last=None, multi_prom
             if chat_id != ADMIN_ID:
                 user_credits[chat_id] += cost
                 save_data()
-        bot.send_message(chat_id, "❌ Ошибка связи.")
+        bot.send_message(chat_id, "❌ Ошибка связи. 🔷 возвращены.")
         return False
 
-# ================== KEYBOARDS & HANDLERS (abbreviated but functional) ==================
 def main_menu_keyboard():
     m = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     m.add(KeyboardButton("🖼 Создать изображение"), KeyboardButton("🎨 Редактировать фото"), KeyboardButton("🎥 Создать видео"), KeyboardButton("💬 Спросить (чат)"), KeyboardButton("👤 Профиль"), KeyboardButton("💰 Магазин"), KeyboardButton("📖 Инструкция"))
