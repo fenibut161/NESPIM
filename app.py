@@ -918,121 +918,120 @@ def poll_video_task(polling_url, headers, chat_id, status_message_id, model_disp
             pass
     bot.edit_message_text("❌ Истекло время ожидания (15 мин).", chat_id, status_message_id)
 
-def generate_video_async(chat_id, prompt=None, first=None, last=None, multi_prompt=None):
+def generate_video_async(chat_id, prompt=None, first_frame_b64=None, last_frame_b64=None, multi_prompt=None, multi_photos_b64=None):
     params = user_video_params.get(chat_id, {})
-    dur = int(params.get("duration", 5))
-    cost = dur * 5
+    duration = params.get("duration", 5)
+    cost = duration * 5
 
     with data_lock:
         if chat_id != ADMIN_ID:
             if user_credits.get(chat_id, 0) < cost:
-                bot.send_message(chat_id, f"❌ Нужно {cost} 🔷. Пополните баланс.")
+                bot.send_message(chat_id, f"❌ Недостаточно 🔷. Нужно {cost}, у вас {user_credits.get(chat_id, 0)}. Пополните баланс в магазине 💰.")
                 return False
             user_credits[chat_id] -= cost
+            user_credit_history[chat_id].append((time.time(), -cost, f"Видео {duration}с"))
             save_data()
-        bot.send_message(chat_id, f"✅ Списано {cost} 🔷")
+        bot.send_message(chat_id, f"✅ Списано {cost} 🔷. Осталось: {user_credits[chat_id]}")
 
-    model = user_video_model.get(chat_id, "kwaivgi/kling-v3.0-pro")
-    model_name = VIDEO_MODELS.get(model, model)
-    asp = params.get("aspect_ratio", "16:9")
-    res = params.get("resolution", "480p")
-    aud = params.get("audio", True)
+    resolution = params.get("resolution", "480p")
+    audio = params.get("audio", True)
+    aspect = params.get("aspect_ratio", "16:9")
+    model_id = user_video_model.get(chat_id, "bytedance/seedance-2.0")
 
+    model_names = {
+        "bytedance/seedance-2.0": "Seedance 2.0",
+        "kwaivgi/kling-video-o1": "Kling O1",
+        "kwaivgi/kling-v3.0-pro": "Kling 3.0 Pro",
+    }
+    model_display = model_names.get(model_id, model_id)
     headers = _build_headers()
-    payload = {"model": model, "duration": dur, "aspect_ratio": asp}
+    payload = {"model": model_id}   # ← начинаем с минимума
+
+    frame_images = []
 
     if multi_prompt:
-        # --- FIX: OpenRouter Video API has no "multi_prompt" field ---
-        # Combine all scene prompts into a single prompt string
-        scenes_text = []
-        refs = []
-        for i, s in enumerate(multi_prompt, 1):
-            scene_dur = int(s.get("duration", s.get("dur", 3)))
-            scenes_text.append(f"Scene {i} ({scene_dur}s): {s.get('prompt', '')}")
-            if s.get("photo"):
-                refs.append({
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:image/jpeg;base64,{compress_image_if_needed(s['photo'])}"
-                    }
-                })
-        payload["prompt"] = "\n\n".join(scenes_text)
-        model_name += " [Studio]"
-        if refs:
-            payload["input_references"] = refs
-    elif prompt:
+        clean_mp = []
+        for idx, item in enumerate(multi_prompt):
+            dur = int(item.get("duration", item.get("dur", 3)))  # поддержка поля 'dur' из студии
+            sc_dict = {"prompt": item.get("prompt", ""), "duration": dur}
+            if item.get("photo"):
+                d_url = f"data:image/jpeg;base64,{compress_image_if_needed(item['photo'])}"
+                sc_dict["image"] = d_url
+                # НЕ добавляем в frame_images – всё внутри multi_prompt
+            clean_mp.append(sc_dict)
+        payload["multi_prompt"] = clean_mp
+        model_display += " [Мультисцена Studio]"
+        # для multi_prompt НЕ передаём duration, aspect_ratio, resolution, audio, frame_images
+    else:
+        # Обычный режим
+        payload["duration"] = duration
+        payload["aspect_ratio"] = aspect
         payload["prompt"] = prompt
-        frames = []
-        if first:
-            frames.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{compress_image_if_needed(first)}"}, "frame_type": "first_frame"})
-        if last:
-            frames.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{compress_image_if_needed(last)}"}, "frame_type": "last_frame"})
-        if frames:
-            payload["frame_images"] = frames
+        if multi_photos_b64 and isinstance(multi_photos_b64, list):
+            for idx, b64 in enumerate(multi_photos_b64[:9]):
+                d_url = f"data:image/jpeg;base64,{compress_image_if_needed(b64)}"
+                f_type = "first_frame" if idx == 0 else ("last_frame" if idx == len(multi_photos_b64)-1 and len(multi_photos_b64)>1 else "reference")
+                frame_images.append({"type": "image_url", "image_url": {"url": d_url}, "frame_type": f_type})
+        else:
+            if first_frame_b64:
+                d_url = f"data:image/jpeg;base64,{compress_image_if_needed(first_frame_b64)}"
+                frame_images.append({"type": "image_url", "image_url": {"url": d_url}, "frame_type": "first_frame"})
+            if last_frame_b64:
+                d_url = f"data:image/jpeg;base64,{compress_image_if_needed(last_frame_b64)}"
+                frame_images.append({"type": "image_url", "image_url": {"url": d_url}, "frame_type": "last_frame"})
+        if frame_images:
+            payload["frame_images"] = frame_images
 
-    feats = VIDEO_MODEL_FEATURES.get(model, {})
-    if feats.get("resolution"):
-        payload["resolution"] = res
-    # --- FIX: OpenRouter uses "generate_audio", not "audio" ---
-    if feats.get("audio"):
-        payload["generate_audio"] = aud
+        features = VIDEO_MODEL_FEATURES.get(model_id, {})
+        if features.get("resolution"):
+            payload["resolution"] = resolution
+        if features.get("audio"):
+            payload["audio"] = audio
 
-    is_valid, error_msg = validate_video_request(model, {
-        "duration": dur, "resolution": res, "aspect_ratio": asp,
-        "multi_prompt": bool(payload.get("input_references"))
-    })
-    if not is_valid:
-        with data_lock:
-            if chat_id != ADMIN_ID:
-                user_credits[chat_id] += cost
-                save_data()
-        bot.send_message(chat_id, f"❌ Модель не поддерживает: {error_msg}")
-        return False
-
-    logging.info(f"[VIDEO] PAYLOAD model={model} dur={dur} res={res} multi={bool(multi_prompt)}")
-
+    # Логирование перед отправкой
+    logging.info(f"Video payload (без frame_images): {json.dumps({k: v for k, v in payload.items() if k != 'frame_images'}, ensure_ascii=False)}")
     try:
-        r = requests.post(OPENROUTER_VIDEO_URL, json=payload, headers=headers, timeout=65)
-        logging.info(f"[VIDEO] POST status={r.status_code}")
-
-        if r.status_code not in (200, 202):
+        resp = requests.post(OPENROUTER_VIDEO_URL, json=payload, headers=headers, timeout=60)
+        if resp.status_code not in (200, 202):
+            # Детальный лог ошибки
+            logging.error(f"Video API error {resp.status_code}: {resp.text[:1000]}")
             with data_lock:
                 if chat_id != ADMIN_ID:
-                    user_credits[chat_id] += cost
+                    user_credits[chat_id] = user_credits.get(chat_id, 0) + cost
+                    user_credit_history[chat_id].append((time.time(), cost, "Возврат за видео"))
                     save_data()
-            bot.send_message(chat_id, f"❌ Ошибка OpenRouter: {r.status_code}")
+            bot.send_message(chat_id, f"❌ Ошибка {resp.status_code}. 🔷 возвращены.")
             return False
-
-        j = r.json()
-        if "polling_url" in j:
-            m = bot.send_message(chat_id, f"🎬 <b>Генерация {model_name}</b>\n\n✅ Запрос принят. Ждём...", parse_mode="HTML")
-            Thread(target=poll_video_task, args=(j["polling_url"], headers, chat_id, m.message_id, model_name), daemon=True).start()
-            user_profile_stats[chat_id]["videos"] += 1
-            save_data()
+        data = resp.json()
+        if "polling_url" in data:
+            msg = bot.send_message(chat_id, f"🎬 Генерация видео ({model_display}): 0%")
+            Thread(target=poll_video_task, args=(data["polling_url"], headers, chat_id, msg.message_id, model_display)).start()
             return True
-
-        if j.get("unsigned_urls"):
-            vr = requests.get(j["unsigned_urls"][0], timeout=70)
-            if vr.status_code == 200 and is_valid_mp4(vr.content):
-                send_video_safe(chat_id, vr.content)
+        if "unsigned_urls" in data and data["unsigned_urls"]:
+            vr = requests.get(data["unsigned_urls"][0], timeout=60, allow_redirects=True)
+            if vr.status_code == 200 and _is_valid_mp4(vr.content):
+                _send_video_safe(chat_id, vr.content)
                 return True
-
+        if "b64_json" in data:
+            raw = base64.b64decode(data["b64_json"])
+            if _is_valid_mp4(raw):
+                _send_video_safe(chat_id, raw)
+                return True
         with data_lock:
             if chat_id != ADMIN_ID:
                 user_credits[chat_id] += cost
+                user_credit_history[chat_id].append((time.time(), cost, "Возврат за видео"))
                 save_data()
-        bot.send_message(chat_id, "❌ Пустой ответ от провайдера. Кредиты возвращены.")
-        return False
-
+        bot.send_message(chat_id, "❌ Пустой ответ. 🔷 возвращены.")
     except Exception as e:
-        logging.error(f"[VIDEO] EXC: {e}")
+        logging.error(f"Video exception: {e}")
         with data_lock:
             if chat_id != ADMIN_ID:
                 user_credits[chat_id] += cost
+                user_credit_history[chat_id].append((time.time(), cost, "Возврат за видео (ошибка)"))
                 save_data()
-        bot.send_message(chat_id, "❌ Ошибка связи с OpenRouter.")
-        return False
-
+        bot.send_message(chat_id, "❌ Ошибка связи. 🔷 возвращены.")
+    return False
 # ================== KEYBOARDS ==================
 def main_menu_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
