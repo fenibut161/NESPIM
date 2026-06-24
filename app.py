@@ -163,6 +163,15 @@ WEBAPP_HTML = '''
 </div>
 
 <div class="card">
+    <div class="card-title">Разрешение видео</div>
+    <div class="aspect-grid" id="resGrid">
+        <div class="aspect-btn active" onclick="setRes('480p', this)">📱 480p</div>
+        <div class="aspect-btn" onclick="setRes('720p', this)">💻 720p</div>
+        <div class="aspect-btn" onclick="setRes('1080p', this)">🖥 1080p</div>
+    </div>
+</div>
+
+<div class="card">
     <div class="card-title">
         <span>Сцены фильма (макс. 6)</span>
         <span style="font-size:13px; font-weight:700" id="totalSec">3с (15 🔷)</span>
@@ -179,6 +188,7 @@ WEBAPP_HTML = '''
     tg.ready(); tg.expand();
 
     let currentAspect = '16:9';
+    let currentRes = '480p';
     let activeUploadIdx = null;
     let scenes = [{ prompt: '', dur: 3, photo: null }];
     const MAX_KLING_SEC = 18;
@@ -217,6 +227,15 @@ WEBAPP_HTML = '''
         currentAspect = asp;
         document.querySelectorAll('.aspect-btn').forEach(b => b.classList.remove('active'));
         el.classList.add('active');
+    }
+
+    function setRes(res, el) {
+        currentRes = res;
+        const grid = document.getElementById('resGrid');
+        if (grid) {
+            grid.querySelectorAll('.aspect-btn').forEach(b => b.classList.remove('active'));
+            el.classList.add('active');
+        }
     }
 
     function triggerUpload(idx) {
@@ -286,7 +305,8 @@ WEBAPP_HTML = '''
         const payload = {
             user_id: tg.initDataUnsafe?.user?.id || 0,
             scenes: scenes,
-            aspect_ratio: currentAspect
+            aspect_ratio: currentAspect,
+            resolution: currentRes
         };
 
         try {
@@ -933,54 +953,7 @@ def generate_video_async(chat_id, prompt=None, first_frame_b64=None, last_frame_
         bot.send_message(chat_id, "❌ Ошибка связи. 🔷 возвращены.")
         return False
 
-    # Логирование payload без base64 для отладки
-    log_payload = {k: v for k, v in payload.items() if k != "frame_images"}
-    log_payload["frame_images_count"] = len(frame_images)
-    logging.info(f"[VIDEO PAYLOAD] {json.dumps(log_payload, ensure_ascii=False)}")
 
-    try:
-        resp = requests.post(OPENROUTER_VIDEO_URL, json=payload, headers=headers, timeout=60)
-        logging.info(f"[VIDEO RESPONSE] status={resp.status_code} body={resp.text[:500]}")
-        if resp.status_code not in (200, 202):
-            with data_lock:
-                if chat_id != ADMIN_ID:
-                    user_credits[chat_id] = user_credits.get(chat_id, 0) + cost
-                    user_credit_history[chat_id].append((time.time(), cost, "Возврат за видео"))
-                    save_data()
-            bot.send_message(chat_id, f"❌ Ошибка {resp.status_code}. 🔷 возвращены.")
-            return False
-        data = resp.json()
-        if "polling_url" in data:
-            msg = bot.send_message(chat_id, f"🎬 Генерация видео ({model_display}): 0%")
-            Thread(target=poll_video_task, args=(data["polling_url"], headers, chat_id, msg.message_id, model_display)).start()
-            return True
-        if "unsigned_urls" in data and data["unsigned_urls"]:
-            vr = requests.get(data["unsigned_urls"][0], timeout=60, allow_redirects=True)
-            if vr.status_code == 200 and _is_valid_mp4(vr.content):
-                _send_video_safe(chat_id, vr.content)
-                return True
-        if "b64_json" in data:
-            raw = base64.b64decode(data["b64_json"])
-            if _is_valid_mp4(raw):
-                _send_video_safe(chat_id, raw)
-                return True
-        with data_lock:
-            if chat_id != ADMIN_ID:
-                user_credits[chat_id] += cost
-                user_credit_history[chat_id].append((time.time(), cost, "Возврат за видео"))
-                save_data()
-        bot.send_message(chat_id, "❌ Пустой ответ. 🔷 возвращены.")
-    except Exception as e:
-        logging.error(f"Video exception: {e}")
-        with data_lock:
-            if chat_id != ADMIN_ID:
-                user_credits[chat_id] += cost
-                user_credit_history[chat_id].append((time.time(), cost, "Возврат за видео (ошибка)"))
-                save_data()
-        bot.send_message(chat_id, "❌ Ошибка связи. 🔷 возвращены.")
-        return False
-
-# ================== KEYBOARDS ==================
 def main_menu_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(
@@ -1931,7 +1904,7 @@ def webapp_submit_video():
         logging.error(f"Не удалось отправить уведомление юзеру {uid}: {e}")
 
     user_video_model[uid] = "kwaivgi/kling-v3.0-pro"
-    user_video_params[uid] = {"duration": total_dur, "aspect_ratio": asp, "audio": True}
+    user_video_params[uid] = {"duration": total_dur, "aspect_ratio": asp, "audio": True, "resolution": data.get("resolution", "480p")}
 
     Thread(target=generate_video_async, args=(uid, None, None, None, scenes), daemon=True).start()
     return jsonify({"ok": True})
