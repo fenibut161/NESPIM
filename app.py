@@ -918,119 +918,259 @@ def poll_video_task(polling_url, headers, chat_id, status_message_id, model_disp
             pass
     bot.edit_message_text("❌ Истекло время ожидания (15 мин).", chat_id, status_message_id)
 
-def generate_video_async(chat_id, prompt=None, first_frame_b64=None, last_frame_b64=None, multi_prompt=None, multi_photos_b64=None):
+def generate_video_async(chat_id, prompt=None, first=None, last=None, multi_prompt=None):
     params = user_video_params.get(chat_id, {})
-    duration = params.get("duration", 5)
-    cost = duration * 5
+    dur = int(params.get("duration", 5))
+    cost = dur * 5
 
     with data_lock:
         if chat_id != ADMIN_ID:
             if user_credits.get(chat_id, 0) < cost:
-                bot.send_message(chat_id, f"❌ Недостаточно 🔷. Нужно {cost}, у вас {user_credits.get(chat_id, 0)}. Пополните баланс в магазине 💰.")
+                bot.send_message(chat_id, f"❌ Нужно {cost} 🔷. Пополните баланс.")
                 return False
             user_credits[chat_id] -= cost
-            user_credit_history[chat_id].append((time.time(), -cost, f"Видео {duration}с"))
             save_data()
-        bot.send_message(chat_id, f"✅ Списано {cost} 🔷. Осталось: {user_credits[chat_id]}")
+        bot.send_message(chat_id, f"✅ Списано {cost} 🔷")
 
-    resolution = params.get("resolution", "480p")
-    audio = params.get("audio", True)
-    aspect = params.get("aspect_ratio", "16:9")
-    model_id = user_video_model.get(chat_id, "bytedance/seedance-2.0")
+    model = user_video_model.get(chat_id, "kwaivgi/kling-v3.0-pro")
+    model_name = VIDEO_MODELS.get(model, model)
+    asp = params.get("aspect_ratio", "16:9")
+    res = params.get("resolution", "480p")
+    aud = params.get("audio", True)
 
-    model_names = {
-        "bytedance/seedance-2.0": "Seedance 2.0",
-        "kwaivgi/kling-video-o1": "Kling O1",
-        "kwaivgi/kling-v3.0-pro": "Kling 3.0 Pro",
-    }
-    model_display = model_names.get(model_id, model_id)
     headers = _build_headers()
-    payload = {"model": model_id}          # начинаем с минимума
-
-    frame_images = []
+    payload = {"model": model, "duration": dur, "aspect_ratio": asp}
 
     if multi_prompt:
-        # Мультисценарий – передаём только model и multi_prompt
-        clean_mp = []
-        for idx, item in enumerate(multi_prompt):
-            dur = int(item.get("duration", item.get("dur", 3)))  # поддержка 'dur' из студии
-            sc_dict = {"prompt": item.get("prompt", ""), "duration": dur}
-            if item.get("photo"):
-                d_url = f"data:image/jpeg;base64,{compress_image_if_needed(item['photo'])}"
-                sc_dict["image"] = d_url
-                # НЕ добавляем в frame_images! Всё внутри multi_prompt.
-            clean_mp.append(sc_dict)
-        payload["multi_prompt"] = clean_mp
-        model_display += " [Мультисцена Studio]"
-        # для multi_prompt НЕ передаём duration, aspect_ratio, resolution, audio, frame_images
-    else:
-        # Обычный режим – добавляем duration, aspect_ratio, prompt и кадры
-        payload["duration"] = duration
-        payload["aspect_ratio"] = aspect
+        scenes_text = []
+        refs = []
+        for i, s in enumerate(multi_prompt, 1):
+            scene_dur = int(s.get("duration", s.get("dur", 3)))
+            scenes_text.append(f"Scene {i} ({scene_dur}s): {s.get('prompt', '')}")
+            if s.get("photo"):
+                refs.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{compress_image_if_needed(s['photo'])}"
+                    }
+                })
+        payload["prompt"] = "\n\n".join(scenes_text)
+        model_name += " [Studio]"
+        if refs:
+            payload["input_references"] = refs
+    elif prompt:
         payload["prompt"] = prompt
-        if multi_photos_b64 and isinstance(multi_photos_b64, list):
-            for idx, b64 in enumerate(multi_photos_b64[:9]):
-                d_url = f"data:image/jpeg;base64,{compress_image_if_needed(b64)}"
-                f_type = "first_frame" if idx == 0 else ("last_frame" if idx == len(multi_photos_b64)-1 and len(multi_photos_b64)>1 else "reference")
-                frame_images.append({"type": "image_url", "image_url": {"url": d_url}, "frame_type": f_type})
-        else:
-            if first_frame_b64:
-                d_url = f"data:image/jpeg;base64,{compress_image_if_needed(first_frame_b64)}"
-                frame_images.append({"type": "image_url", "image_url": {"url": d_url}, "frame_type": "first_frame"})
-            if last_frame_b64:
-                d_url = f"data:image/jpeg;base64,{compress_image_if_needed(last_frame_b64)}"
-                frame_images.append({"type": "image_url", "image_url": {"url": d_url}, "frame_type": "last_frame"})
-        if frame_images:
-            payload["frame_images"] = frame_images
+        frames = []
+        if first:
+            frames.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{compress_image_if_needed(first)}"}, "frame_type": "first_frame"})
+        if last:
+            frames.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{compress_image_if_needed(last)}"}, "frame_type": "last_frame"})
+        if frames:
+            payload["frame_images"] = frames
 
-        features = VIDEO_MODEL_FEATURES.get(model_id, {})
-        if features.get("resolution"):
-            payload["resolution"] = resolution
-        if features.get("audio"):
-            payload["audio"] = audio
+    feats = VIDEO_MODEL_FEATURES.get(model, {})
+    if feats.get("resolution"):
+        payload["resolution"] = res
+    if feats.get("audio"):
+        payload["generate_audio"] = aud
 
-    logging.info(f"Video payload (без frame_images): {json.dumps({k: v for k, v in payload.items() if k != 'frame_images'}, ensure_ascii=False)}")
+    is_valid, error_msg = validate_video_request(model, {
+        "duration": dur, "resolution": res, "aspect_ratio": asp,
+        "multi_prompt": bool(payload.get("input_references"))
+    })
+    if not is_valid:
+        with data_lock:
+            if chat_id != ADMIN_ID:
+                user_credits[chat_id] += cost
+                save_data()
+        bot.send_message(chat_id, f"❌ Модель не поддерживает: {error_msg}")
+        return False
+
+    logging.info(f"[VIDEO] PAYLOAD model={model} dur={dur} res={res} multi={bool(multi_prompt)}")
+
     try:
-        resp = requests.post(OPENROUTER_VIDEO_URL, json=payload, headers=headers, timeout=60)
-        if resp.status_code not in (200, 202):
-            logging.error(f"Video API error {resp.status_code}: {resp.text[:1000]}")
+        r = requests.post(OPENROUTER_VIDEO_URL, json=payload, headers=headers, timeout=65)
+        logging.info(f"[VIDEO] POST status={r.status_code}")
+
+        if r.status_code not in (200, 202):
             with data_lock:
                 if chat_id != ADMIN_ID:
-                    user_credits[chat_id] = user_credits.get(chat_id, 0) + cost
-                    user_credit_history[chat_id].append((time.time(), cost, "Возврат за видео"))
+                    user_credits[chat_id] += cost
                     save_data()
-            bot.send_message(chat_id, f"❌ Ошибка {resp.status_code}. 🔷 возвращены.")
+            bot.send_message(chat_id, f"❌ Ошибка OpenRouter: {r.status_code}")
             return False
-        data = resp.json()
-        if "polling_url" in data:
-            msg = bot.send_message(chat_id, f"🎬 Генерация видео ({model_display}): 0%")
-            Thread(target=poll_video_task, args=(data["polling_url"], headers, chat_id, msg.message_id, model_display)).start()
+
+        j = r.json()
+        logging.info(f"[VIDEO] RESPONSE JSON: {json.dumps(j, ensure_ascii=False)}")
+
+        # --- FIX: fallback если polling_url отсутствует, но есть id ---
+        polling_url = j.get("polling_url")
+        if not polling_url and j.get("id"):
+            polling_url = f"https://openrouter.ai/api/v1/videos/{j['id']}"
+            logging.info(f"[VIDEO] Built polling_url from id: {polling_url}")
+
+        if polling_url:
+            m = bot.send_message(chat_id, f"🎬 <b>Генерация {model_name}</b>\n\n✅ Запрос принят. Ждём...", parse_mode="HTML")
+            Thread(target=poll_video_task, args=(polling_url, headers, chat_id, m.message_id, model_name), daemon=True).start()
+            user_profile_stats[chat_id]["videos"] += 1
+            save_data()
             return True
-        if "unsigned_urls" in data and data["unsigned_urls"]:
-            vr = requests.get(data["unsigned_urls"][0], timeout=60, allow_redirects=True)
-            if vr.status_code == 200 and _is_valid_mp4(vr.content):
-                _send_video_safe(chat_id, vr.content)
+
+        # --- FIX: сразу готовое видео (редко, но возможно) ---
+        if j.get("unsigned_urls"):
+            vr = requests.get(j["unsigned_urls"][0], timeout=70)
+            logging.info(f"[VIDEO] Immediate download status={vr.status_code} size={len(vr.content)}")
+            if vr.status_code == 200 and len(vr.content) > 500:
+                send_video_safe(chat_id, vr.content, f"✅ Готово! {model_name}")
                 return True
-        if "b64_json" in data:
-            raw = base64.b64decode(data["b64_json"])
-            if _is_valid_mp4(raw):
-                _send_video_safe(chat_id, raw)
-                return True
+
         with data_lock:
             if chat_id != ADMIN_ID:
                 user_credits[chat_id] += cost
-                user_credit_history[chat_id].append((time.time(), cost, "Возврат за видео"))
                 save_data()
-        bot.send_message(chat_id, "❌ Пустой ответ. 🔷 возвращены.")
+        bot.send_message(chat_id, "❌ Пустой ответ от провайдера (нет polling_url и unsigned_urls). Кредиты возвращены.")
+        return False
+
     except Exception as e:
-        logging.error(f"Video exception: {e}")
+        logging.error(f"[VIDEO] EXC: {e}")
         with data_lock:
             if chat_id != ADMIN_ID:
                 user_credits[chat_id] += cost
-                user_credit_history[chat_id].append((time.time(), cost, "Возврат за видео (ошибка)"))
                 save_data()
-        bot.send_message(chat_id, "❌ Ошибка связи. 🔷 возвращены.")
-    return False
+        bot.send_message(chat_id, f"❌ Ошибка связи с OpenRouter: {str(e)[:200]}")
+        return False
+
+
+def poll_video_task(polling_url, headers, chat_id, status_message_id, model_display=""):
+    """Красивый прогресс-бар (пользователь любит █░ + проценты + этапы + попытки).
+    После completed — живые обновления "Скачиваю... (попытка X/10)", 10 попыток, 
+    оба endpoint'а, логи, >50MB fallback."""
+    start_time = time.time()
+    last_edit = 0
+
+    for attempt in range(1, 110):  # ~15 мин
+        time.sleep(8)
+
+        try:
+            resp = requests.get(polling_url, headers=headers, timeout=25)
+            if resp.status_code != 200:
+                logging.warning(f"[POLL] HTTP {resp.status_code} on {polling_url}")
+                continue
+
+            data = resp.json()
+            status = data.get("status", "unknown")
+            progress = data.get("progress")
+            elapsed = int(time.time() - start_time)
+            mins = elapsed // 60
+
+            # --- FIX: OpenRouter использует "in_progress", а не "processing" ---
+            if status in ("in_progress", "processing", "pending", "running", "queued"):
+                if progress and progress > 5:
+                    filled = int(progress / 10)
+                    bar = "█" * filled + "░" * (10 - filled)
+                    text = f"🎬 <b>{model_display}</b>\n📊 Прогресс: <b>{int(progress)}%</b>\n[{bar}]\n⏱ Прошло: {mins} мин ({elapsed} сек)\n🔄 Опрос #{attempt}"
+                else:
+                    if mins < 1: stage = "Подготовка запроса"
+                    elif mins < 2: stage = "Анализ референсов"
+                    elif mins < 4: stage = "Генерация кадров"
+                    elif mins < 7: stage = "Рендеринг видео"
+                    else: stage = "Финализация и кодирование"
+                    text = f"🎬 <b>{model_display}</b>\n⏳ {stage}...\n⏱ Прошло: {mins} мин\n🔄 Опрос #{attempt} (OpenRouter)"
+
+            elif status == "completed":
+                try:
+                    bot.edit_message_text("✅ <b>Генерация завершена!</b>\n⏳ Начинаю скачивание с OpenRouter...", chat_id, status_message_id, parse_mode="HTML")
+                except:
+                    pass
+                time.sleep(1.5)
+
+                downloaded = False
+                job_id = polling_url.rstrip("/").split("/")[-1]
+                urls = data.get("unsigned_urls", []) or []
+
+                logging.info(f"[DOWNLOAD] COMPLETED job={job_id} urls={len(urls)}")
+
+                MAX_DL_ATTEMPTS = 10
+                for dl_attempt in range(1, MAX_DL_ATTEMPTS + 1):
+                    try:
+                        # LIVE progress for download phase (exactly as user likes)
+                        try:
+                            bot.edit_message_text(
+                                f"✅ Генерация завершена\n⏳ Скачиваю... (попытка {dl_attempt}/{MAX_DL_ATTEMPTS})",
+                                chat_id, status_message_id, parse_mode="HTML"
+                            )
+                        except Exception as edit_e:
+                            logging.warning(f"[DOWNLOAD] edit #{dl_attempt} failed: {edit_e}")
+
+                        # 1. unsigned_urls
+                        for u in urls:
+                            try:
+                                vr = requests.get(u, timeout=130, allow_redirects=True)
+                                if vr.status_code == 200 and len(vr.content) > 500:
+                                    if send_video_safe(chat_id, vr.content, f"✅ Готово! {model_display}"):
+                                        logging.info(f"[DOWNLOAD] SUCCESS unsigned attempt={dl_attempt}")
+                                        downloaded = True
+                                        break
+                            except Exception as ue:
+                                logging.warning(f"[DOWNLOAD] unsigned error: {ue}")
+
+                        if downloaded:
+                            break
+
+                        # 2. /content endpoint (second chance)
+                        try:
+                            content_url = f"https://openrouter.ai/api/v1/videos/{job_id}/content?index=0"
+                            vr = requests.get(content_url, headers=headers, timeout=130)
+                            if vr.status_code == 200 and len(vr.content) > 500:
+                                if send_video_safe(chat_id, vr.content, f"✅ Готово! {model_display}"):
+                                    logging.info(f"[DOWNLOAD] SUCCESS /content attempt={dl_attempt}")
+                                    downloaded = True
+                                    break
+                        except Exception as ce:
+                            logging.error(f"[DOWNLOAD] /content error attempt {dl_attempt}: {ce}")
+
+                        delay = min(4 + (dl_attempt * 1.85), 18)
+                        logging.warning(f"[DOWNLOAD] attempt {dl_attempt} no valid MP4 yet. Sleeping {delay}s")
+                        time.sleep(delay)
+
+                    except Exception as e:
+                        logging.error(f"[DOWNLOAD] attempt {dl_attempt} outer exception: {e}")
+                        time.sleep(7)
+
+                if not downloaded:
+                    try:
+                        bot.edit_message_text(
+                            f"⚠️ Видео готово (Job {job_id}).\nСкачать не удалось после {MAX_DL_ATTEMPTS} попыток.\nНапишите /start или попробуйте позже.",
+                            chat_id, status_message_id
+                        )
+                    except:
+                        bot.send_message(chat_id, f"⚠️ Видео (Job {job_id}) готово, но скачивание не удалось после 10 попыток.")
+                return
+
+            elif status in ("failed", "cancelled", "expired"):
+                err = data.get("error", status)
+                try:
+                    bot.edit_message_text(f"❌ Ошибка генерации: {err}", chat_id, status_message_id)
+                except:
+                    bot.send_message(chat_id, f"❌ Ошибка: {err}")
+                return
+
+            now = time.time()
+            if now - last_edit > 11:
+                try:
+                    bot.edit_message_text(text, chat_id, status_message_id, parse_mode="HTML")
+                    last_edit = now
+                except:
+                    pass
+
+        except Exception as e:
+            logging.warning(f"[POLL] attempt {attempt}: {e}")
+            continue
+
+    try:
+        bot.edit_message_text("⏰ Время ожидания вышло (~15 мин). Попробуйте снова.", chat_id, status_message_id)
+    except:
+        pass
 # ================== KEYBOARDS ==================
 def main_menu_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
