@@ -857,13 +857,11 @@ def generate_video_async(chat_id, prompt=None, first_frame_b64=None, last_frame_
     if multi_prompt:
         clean_mp = []
         for idx, item in enumerate(multi_prompt):
-            # Исправляем mapping dur->duration
-            dur = int(item.get("dur", item.get("duration", 3)))
-            sc_dict = {"prompt": item.get("prompt", ""), "duration": dur}
-            # Фото НЕ вкладываем в multi_prompt, а собираем в frame_images
+            sc_dict = {"prompt": item.get("prompt", ""), "duration": int(item.get("duration", 3))}
             if item.get("photo"):
                 d_url = f"data:image/jpeg;base64,{compress_image_if_needed(item['photo'])}"
-                frame_images.append({"type": "image_url", "image_url": {"url": d_url}})
+                sc_dict["image"] = d_url
+                # frame_images нам не нужен для multi_prompt, картинки уже внутри
             clean_mp.append(sc_dict)
         payload["multi_prompt"] = clean_mp
         model_display += " [Мультисцена Studio]"
@@ -872,22 +870,68 @@ def generate_video_async(chat_id, prompt=None, first_frame_b64=None, last_frame_
         if multi_photos_b64 and isinstance(multi_photos_b64, list):
             for idx, b64 in enumerate(multi_photos_b64[:9]):
                 d_url = f"data:image/jpeg;base64,{compress_image_if_needed(b64)}"
-                frame_images.append({"type": "image_url", "image_url": {"url": d_url}})
+                f_type = "first_frame" if idx == 0 else ("last_frame" if idx == len(multi_photos_b64)-1 and len(multi_photos_b64)>1 else "reference")
+                frame_images.append({"type": "image_url", "image_url": {"url": d_url}, "frame_type": f_type})
         else:
             if first_frame_b64:
                 d_url = f"data:image/jpeg;base64,{compress_image_if_needed(first_frame_b64)}"
-                frame_images.append({"type": "image_url", "image_url": {"url": d_url}})
+                frame_images.append({"type": "image_url", "image_url": {"url": d_url}, "frame_type": "first_frame"})
             if last_frame_b64:
                 d_url = f"data:image/jpeg;base64,{compress_image_if_needed(last_frame_b64)}"
-                frame_images.append({"type": "image_url", "image_url": {"url": d_url}})
+                frame_images.append({"type": "image_url", "image_url": {"url": d_url}, "frame_type": "last_frame"})
 
     features = VIDEO_MODEL_FEATURES.get(model_id, {})
     if features.get("resolution"):
         payload["resolution"] = resolution
     if features.get("audio"):
         payload["audio"] = audio
-    if frame_images:
+
+    # ВАЖНО: frame_images добавляем ТОЛЬКО если нет multi_prompt (для совместимости)
+    if frame_images and not multi_prompt:
         payload["frame_images"] = frame_images
+
+    logging.info(f"Video payload: {json.dumps({k: v for k, v in payload.items() if k != 'frame_images'}, ensure_ascii=False)}")
+    try:
+        resp = requests.post(OPENROUTER_VIDEO_URL, json=payload, headers=headers, timeout=60)
+        if resp.status_code not in (200, 202):
+            logging.error(f"Video API error {resp.status_code}: {resp.text[:500]}")
+            with data_lock:
+                if chat_id != ADMIN_ID:
+                    user_credits[chat_id] = user_credits.get(chat_id, 0) + cost
+                    user_credit_history[chat_id].append((time.time(), cost, "Возврат за видео"))
+                    save_data()
+            bot.send_message(chat_id, f"❌ Ошибка {resp.status_code}. 🔷 возвращены.")
+            return False
+        data = resp.json()
+        if "polling_url" in data:
+            msg = bot.send_message(chat_id, f"🎬 Генерация видео ({model_display}): 0%")
+            Thread(target=poll_video_task, args=(data["polling_url"], headers, chat_id, msg.message_id, model_display)).start()
+            return True
+        if "unsigned_urls" in data and data["unsigned_urls"]:
+            vr = requests.get(data["unsigned_urls"][0], timeout=60, allow_redirects=True)
+            if vr.status_code == 200 and _is_valid_mp4(vr.content):
+                _send_video_safe(chat_id, vr.content)
+                return True
+        if "b64_json" in data:
+            raw = base64.b64decode(data["b64_json"])
+            if _is_valid_mp4(raw):
+                _send_video_safe(chat_id, raw)
+                return True
+        with data_lock:
+            if chat_id != ADMIN_ID:
+                user_credits[chat_id] += cost
+                user_credit_history[chat_id].append((time.time(), cost, "Возврат за видео"))
+                save_data()
+        bot.send_message(chat_id, "❌ Пустой ответ. 🔷 возвращены.")
+    except Exception as e:
+        logging.error(f"Video exception: {e}")
+        with data_lock:
+            if chat_id != ADMIN_ID:
+                user_credits[chat_id] += cost
+                user_credit_history[chat_id].append((time.time(), cost, "Возврат за видео (ошибка)"))
+                save_data()
+        bot.send_message(chat_id, "❌ Ошибка связи. 🔷 возвращены.")
+        return False
 
     # Логирование payload без base64 для отладки
     log_payload = {k: v for k, v in payload.items() if k != "frame_images"}
