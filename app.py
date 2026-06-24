@@ -64,13 +64,11 @@ user_video_params = {}
 user_video_model = {}
 user_video_history = defaultdict(list)
 
-# --- CHAIN EDIT ---
 user_last_image = {}
 user_last_edit_model = {}
 user_last_face_mode = {}
 user_last_edit_aspect = {}
 
-# --- EDIT ASPECT ---
 user_edit_aspect = {}
 
 # --- MODELS ---
@@ -84,8 +82,8 @@ ASPECT_PROMPTS = {
     "4:3": "standard 4:3 photo composition, classic portrait or landscape ratio",
 }
 
-# --- TELEGRAM WEB APP HTML TEMPLATE ---
-WEBAPP_HTML = """
+# --- WEB APP HTML ---
+WEBAPP_HTML = '''
 <!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -117,17 +115,14 @@ WEBAPP_HTML = """
             padding: 10px; border-radius: 12px; text-align: center; font-size: 13px; font-weight: 500; cursor: pointer; transition: all 0.2s;
         }
         .aspect-btn.active { border-color: var(--btn-color); background: rgba(59, 130, 246, 0.15); }
-        
         .scene-block { background: rgba(0,0,0,0.25); border-radius: 14px; padding: 14px; margin-bottom: 14px; border: 1px solid rgba(255,255,255,0.05); }
         .scene-head { display: flex; justify-content: space-between; align-items: center; font-size: 14px; font-weight: 600; margin-bottom: 10px; }
         .scene-del { color: #ef4444; font-size: 12px; cursor: pointer; padding: 4px; }
-        
         textarea {
             width: 100%; box-sizing: border-box; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1);
             border-radius: 10px; color: var(--text-color); padding: 10px; font-size: 14px; resize: none; height: 60px; outline: none; margin-bottom: 10px;
         }
         textarea:focus { border-color: var(--btn-color); }
-        
         .scene-img-box {
             border: 1px dashed rgba(255,255,255,0.2); border-radius: 10px; padding: 10px; text-align: center; cursor: pointer;
             background: rgba(255,255,255,0.02); transition: all 0.2s; position: relative; overflow: hidden; min-height: 36px;
@@ -140,11 +135,9 @@ WEBAPP_HTML = """
             position: absolute; top: 6px; right: 6px; background: rgba(239, 68, 68, 0.9); color: #fff;
             border-radius: 50%; width: 22px; height: 22px; font-size: 12px; display: flex; align-items: center; justify-content: center; cursor: pointer;
         }
-
         .dur-row { display: flex; justify-content: space-between; align-items: center; margin-top: 12px; font-size: 13px; color: var(--hint-color); }
         input[type="range"] { accent-color: var(--btn-color); width: 58%; }
         .sec-num { font-weight: 700; color: #3b82f6; width: 32px; text-align: right; }
-        
         .add-scene-btn { width: 100%; padding: 14px; background: rgba(255,255,255,0.08); border: none; border-radius: 12px; color: var(--text-color); font-weight: 600; font-size: 14px; cursor: pointer; }
         .main-btn {
             position: fixed; bottom: 16px; left: 16px; right: 16px; background: var(--btn-color); color: var(--btn-text);
@@ -311,7 +304,7 @@ WEBAPP_HTML = """
 </script>
 </body>
 </html>
-"""
+'''
 
 # --- GIST SYNC ---
 def load_data():
@@ -410,8 +403,7 @@ def _build_headers():
         "X-Title": "TelegramBot",
     }
 
-# ================== AGENT TOOLS HELPERS ==================
-# ИСПРАВЛЕНО: DuckDuckGo Lite теперь основной источник (стабильнее для ботов)
+# ================== WEB SEARCH ==================
 def helper_web_search(query):
     try:
         headers = {
@@ -422,13 +414,12 @@ def helper_web_search(query):
         }
         items = []
 
-        # 1. DuckDuckGo Lite (primary)
+        # DuckDuckGo Lite
         try:
             url = "https://lite.duckduckgo.com/lite/"
             r = requests.post(url, data={"q": query, "kl": "ru-ru"}, headers=headers, timeout=15)
             if r.status_code == 200:
                 text = r.text
-                # Parse result blocks: link + snippet
                 rows = re.findall(
                     r'<a[^>]+class="result-link"[^>]*>(.*?)</a>.*?<td[^>]+class="result-snippet"[^>]*>(.*?)</td>',
                     text, re.DOTALL | re.IGNORECASE
@@ -441,7 +432,7 @@ def helper_web_search(query):
         except Exception as e:
             logging.warning(f"DDG Lite error: {e}")
 
-        # 2. DuckDuckGo HTML fallback
+        # Fallback HTML
         if len(items) < 2:
             try:
                 url = "https://html.duckduckgo.com/html/"
@@ -453,12 +444,12 @@ def helper_web_search(query):
                     for i in range(min(len(titles), len(snippets), 5)):
                         t = re.sub(r'<.*?>', '', titles[i]).strip()
                         s = re.sub(r'<.*?>', '', snippets[i]).strip()
-                        if t or s and not any(t in it for it in items):
+                        if t or s:
                             items.append(f"{t}: {s}" if t and s else (t or s))
             except Exception as e:
-                logging.warning(f"DDG HTML fallback error: {e}")
+                logging.warning(f"DDG HTML error: {e}")
 
-        # 3. Google News RSS (news-only fallback)
+        # Google News RSS
         if len(items) < 2:
             try:
                 rss_url = f"https://news.google.com/rss/search?q={urllib.parse.quote(query)}&hl=ru&gl=RU&ceid=RU:ru"
@@ -493,167 +484,7 @@ def helper_fetch_webpage(url):
     except Exception as e:
         return f"Не удалось прочитать ссылку: {e}"
 
-AGENT_TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "web_search",
-            "description": "Поиск актуальных новостей, фактов, документации или информации в интернете",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "Точный поисковый запрос на русском или английском"}
-                },
-                "required": ["query"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "fetch_webpage",
-            "description": "Прочесть текстовое содержимое веб-страницы по ссылке (URL)",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "url": {"type": "string", "description": "Прямая ссылка http/https"}
-                },
-                "required": ["url"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "generate_image",
-            "description": "Нарисовать и отправить юзеру картинку через нейросеть Flux Pro. Списывает 2 токена 🔷.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "prompt": {"type": "string", "description": "Промпт для генерации картинки на английском или русском"},
-                    "aspect_ratio": {"type": "string", "enum": ["16:9", "9:16", "1:1", "4:3"], "description": "Формат кадра"}
-                },
-                "required": ["prompt", "aspect_ratio"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "generate_multiscene_video",
-            "description": "Снять кинематографичный многосценовый видеоролик Kling 3.0 Pro со звуком (5 🔷/сек).",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "scenes": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "prompt": {"type": "string", "description": "Описание действия в конкретном кадре"},
-                                "duration": {"type": "integer", "description": "Секунды (от 2 до 6)"}
-                            },
-                            "required": ["prompt", "duration"]
-                        }
-                    },
-                    "aspect_ratio": {"type": "string", "enum": ["16:9", "9:16", "1:1"]},
-                    "confirmed_by_user": {"type": "boolean"}
-                },
-                "required": ["scenes", "aspect_ratio", "confirmed_by_user"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_my_balance",
-            "description": "Проверить текущий баланс токенов 🔷 пользователя",
-            "parameters": {"type": "object", "properties": {}}
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "clear_memory",
-            "description": "Очистить память диалога с пользователем",
-            "parameters": {"type": "object", "properties": {}}
-        }
-    }
-]
-
-# ================== DEEPSEEK AGENT CORE ==================
-# ИСПРАВЛЕНО: добавлены fallback-парсинги JSON из markdown и inline JSON,
-# а также нативный tool_calls из OpenRouter
-def extract_deepseek_tools(choice_msg):
-    # 1. Native OpenAI format (OpenRouter standard)
-    if choice_msg.get("tool_calls"):
-        return choice_msg["tool_calls"], choice_msg.get("content", "")
-
-    content = choice_msg.get("content", "")
-    if not content:
-        return None, ""
-
-    # 2. DeepSeek XML-like format in content
-    if "<｜tool" in content or "<|tool" in content:
-        unified = content.replace("<|", "<｜").replace("|>", "｜>")
-        pattern = r'<｜tool▁call▁begin｜>function<｜tool▁sep｜>(\w+)\s*\n?(\{.*?\})<｜tool▁call▁end｜>'
-        raw_matches = re.findall(pattern, unified, re.DOTALL)
-        if not raw_matches:
-            pattern2 = r'<｜tool▁sep｜>(\w+)(?:\s*\n?)([\s\S]*?)(?:<｜tool▁call▁end｜>|<｜tool▁calls▁end｜>|$)'
-            raw_matches = re.findall(pattern2, unified, re.DOTALL)
-
-        t_calls = []
-        for fn_name, arg_str in raw_matches:
-            fn_name = fn_name.strip()
-            arg_str = arg_str.strip()
-            if not arg_str.startswith("{"):
-                json_match = re.search(r'(\{.*\})', arg_str, re.DOTALL)
-                if json_match:
-                    arg_str = json_match.group(1)
-            t_calls.append({
-                "id": f"call_{int(time.time()*1000)}_{len(t_calls)}",
-                "type": "function",
-                "function": {"name": fn_name, "arguments": arg_str}
-            })
-        if t_calls:
-            clean_text = unified.split("<｜tool")[0].strip()
-            clean_text = re.sub(r"\b(попис|минут|секун|поиск|созда|арт|функц)$", "", clean_text).strip()
-            return t_calls, clean_text
-
-    # 3. Fallback: JSON inside markdown code block (```json ... ```)
-    md_json = re.search(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', content, re.DOTALL)
-    if md_json:
-        try:
-            data = json.loads(md_json.group(1))
-            if "name" in data and "arguments" in data:
-                tc = {
-                    "id": f"call_{int(time.time()*1000)}",
-                    "type": "function",
-                    "function": {
-                        "name": data["name"],
-                        "arguments": json.dumps(data["arguments"], ensure_ascii=False)
-                    }
-                }
-                clean = content[:md_json.start()].strip()
-                return [tc], clean
-        except Exception:
-            pass
-
-    # 4. Fallback: inline JSON object with name+arguments
-    inline = re.search(r'\{\s*"name"\s*:\s*"(\w+)"\s*,\s*"arguments"\s*:\s*(\{[\s\S]*?\})\s*\}', content, re.DOTALL)
-    if inline:
-        try:
-            tc = {
-                "id": f"call_{int(time.time()*1000)}",
-                "type": "function",
-                "function": {"name": inline.group(1), "arguments": inline.group(2)}
-            }
-            return [tc], content[:inline.start()].strip()
-        except Exception:
-            pass
-
-    return None, content
-
+# ================== AGENT CORE (FIXED) ==================
 def ask_deepseek(prompt):
     headers = _build_headers()
     payload = {"model": "deepseek/deepseek-chat", "messages": [{"role": "user", "content": prompt}]}
@@ -665,170 +496,120 @@ def ask_deepseek(prompt):
         logging.error(f"DeepSeek exception: {e}")
     return "⚠️ Ошибка соединения"
 
-# ИСПРАВЛЕНО: добавлен tool_choice: "auto", parallel_tool_calls: False,
-# усилен system prompt, добавлено логирование raw-ответа
 def run_agent(chat_id, user_text):
+    lower = user_text.lower().strip()
+
+    # --- 1. Прямые команды (без LLM) ---
+    if lower in ["баланс", "сколько у меня", "мои токены", "мой баланс"]:
+        bal = user_credits.get(chat_id, 0)
+        return f"💰 Ваш баланс: {bal} 🔷"
+
+    if any(k in lower for k in ["забудь всё", "очисти память", "сбрось диалог", "новый разговор"]):
+        user_chat_history[chat_id] = []
+        save_data()
+        return "🧠 Память диалога полностью очищена. Начинаем с чистого листа!"
+
+    # --- 2. Генерация изображения (прямой вызов) ---
+    img_triggers = ["нарисуй", "сгенерируй изображение", "сгенерируй картинку", "сделай арт", "арт где", "картинка где"]
+    wants_image = any(t in lower for t in img_triggers)
+    if wants_image:
+        prompt = user_text
+        for t in img_triggers:
+            if t in lower:
+                idx = lower.find(t)
+                prompt = user_text[idx + len(t):].strip()
+                break
+        if prompt.startswith(":") or prompt.startswith("-"):
+            prompt = prompt[1:].strip()
+        if not prompt:
+            prompt = user_text
+
+        cost = CREDIT_COSTS["image_pro"]
+        with data_lock:
+            if chat_id != ADMIN_ID and user_credits.get(chat_id, 0) < cost:
+                return f"❌ Недостаточно 🔷 для генерации. Нужно {cost}, у вас {user_credits.get(chat_id, 0)}."
+            if chat_id != ADMIN_ID:
+                user_credits[chat_id] -= cost
+                user_credit_history[chat_id].append((time.time(), -cost, "Агент: арт"))
+                save_data()
+
+        bot.send_message(chat_id, "🎨 Агент генерирует изображение (16:9)...")
+        full_p = f"{prompt}. {ASPECT_PROMPTS.get('16:9', '')}"
+        img_bytes = generate_image_flux(full_p)
+        if img_bytes:
+            out_b, _ = _prepare_image_bytes(img_bytes)
+            bot.send_photo(chat_id, out_b or img_bytes, caption="🎨 Создано ИИ-агентом")
+            return "Вот ваша картинка! 🎨"
+        else:
+            if chat_id != ADMIN_ID:
+                with data_lock:
+                    user_credits[chat_id] += cost
+                    save_data()
+            return "❌ Не удалось сгенерировать изображение. Токены 🔷 возвращены."
+
+    # --- 3. Поиск в интернете (прямой вызов) ---
+    search_triggers = [
+        "новост", "погод", "курс", "цена", "сегодня", "вчера", "завтра",
+        "2025", "2026", "актуальн", "свеж", "последн", "текущий", "сейчас",
+        "результат", "матч", "игра", "кто выиграл", "сколько стоит",
+        "какой сейчас", "найди", "поиск", "google", "интернет", "факт",
+        "события", "политик", "экономик", "технолог", "наука"
+    ]
+    needs_search = any(t in lower for t in search_triggers)
+
+    if needs_search:
+        bot.send_message(chat_id, "🔍 Ищу актуальную информацию в интернете...")
+        results = helper_web_search(user_text)
+        context = "\n".join(results[:6])
+        logging.info(f"[SEARCH] chat_id={chat_id} results={len(results)}")
+
+        search_prompt = (
+            f"Пользователь задал вопрос: \"{user_text}\"\n\n"
+            f"Я нашёл в интернете следующую информацию:\n---\n{context}\n---\n\n"
+            f"На основе этих данных дай точный, развёрнутый и понятный ответ на русском языке. "
+            f"Если данных недостаточно — честно скажи об этом. Не выдумывай факты."
+        )
+        answer = ask_deepseek(search_prompt)
+
+        history = user_chat_history.get(chat_id, [])
+        history.append({"role": "user", "content": user_text})
+        history.append({"role": "assistant", "content": answer})
+        user_chat_history[chat_id] = history[-20:]
+        return answer
+
+    # --- 4. Обычный чат с историей ---
     history = list(user_chat_history.get(chat_id, []))
     if len(history) > 20:
         history = history[-18:]
 
-    system_prompt = (
-        "Ты — персональный ИИ-агент NESPIM в Telegram. У тебя есть инструменты (functions/tools).\n"
-        "ПРАВИЛО №1: Если пользователь спрашивает о событиях после 2024 года, погоду, курсы валют, "
-        "новости, спортивные результаты, актуальные факты или что-то, что могло измениться за последние месяцы — "
-        "ты ОБЯЗАН вызвать функцию web_search. Не отвечай из своей памяти на актуальные вопросы.\n"
-        "ПРАВИЛО №2: Если пользователь прислал ссылку — вызови fetch_webpage ровно один раз.\n"
-        "ПРАВИЛО №3: Если пользователь просит картинку ('нарисуй', 'арт', 'сгенерируй изображение') — "
-        "вызови generate_image немедленно. aspect_ratio по умолчанию '16:9'.\n"
-        "ПРАВИЛО №4: Для видео сначала предложи сценарий, посчитай стоимость (5 🔷/сек), спроси подтверждение. "
-        "Только потом generate_multiscene_video с confirmed_by_user=True.\n"
-        "ПРАВИЛО №5: Делай СТРОГО НЕ БОЛЕЕ ОДНОГО вызова инструмента за раз. Получив результат — сразу формируй финальный ответ.\n"
-        "ПРАВИЛО №6: Отвечай понятно, емко, на русском языке.\n\n"
-        "Доступные инструменты:\n"
-        "• web_search — поиск в интернете (Google/DuckDuckgo). Используй для актуальной информации.\n"
-        "• fetch_webpage — чтение ссылок.\n"
-        "• generate_image — генерация картинки (2 🔷).\n"
-        "• generate_multiscene_video — видео Kling 3.0 Pro (5 🔷/сек).\n"
-        "• get_my_balance — баланс токенов.\n"
-        "• clear_memory — очистить историю диалога."
-    )
+    system_msg = {
+        "role": "system",
+        "content": (
+            "Ты — персональный ИИ-агент NESPIM. Ты умный, вежливый, инициативный. "
+            "Отвечай понятно, емко, на русском языке. Если не знаешь ответ — честно признайся. "
+            "Ты можешь помогать с творческими задачами, кодом, анализом, советами. "
+            "Для актуальных новостей и фактов ты выходишь в интернет (это уже сделано автоматически, если нужно)."
+        )
+    }
 
-    messages = [{"role": "system", "content": system_prompt}] + history + [{"role": "user", "content": user_text}]
+    messages = [system_msg] + history + [{"role": "user", "content": user_text}]
     headers = _build_headers()
+    payload = {"model": "deepseek/deepseek-chat", "messages": messages}
 
-    for turn in range(4):
-        payload = {
-            "model": "deepseek/deepseek-chat",
-            "messages": messages,
-            "tools": AGENT_TOOLS,
-            "tool_choice": "auto",
-            "parallel_tool_calls": False,
-        }
-        try:
-            r = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=60)
-            if r.status_code != 200:
-                return f"⚠️ Ошибка OpenRouter: {r.status_code}"
-
+    try:
+        r = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=60)
+        if r.status_code == 200:
             data = r.json()
-            if "error" in data:
-                return f"❌ Ошибка API: {data['error'].get('message', 'limit')}"
-
-            choice_msg = data["choices"][0]["message"]
-            
-            # ИСПРАВЛЕНО: логируем raw-ответ для отладки
-            logging.info(f"[AGENT RAW] {json.dumps(choice_msg, ensure_ascii=False)[:800]}")
-
-            tool_calls, clean_content = extract_deepseek_tools(choice_msg)
-
-            if tool_calls:
-                choice_msg["content"] = clean_content
-                choice_msg["tool_calls"] = tool_calls
-                messages.append(choice_msg)
-
-                for tc in tool_calls:
-                    fn_name = tc["function"]["name"]
-                    fn_args = tc["function"]["arguments"]
-                    call_id = tc["id"]
-
-                    try:
-                        args = json.loads(fn_args)
-                    except Exception:
-                        args = {}
-
-                    logging.info(f"[AGENT TOOL] chat_id={chat_id} -> {fn_name}({args})")
-                    res_content = ""
-
-                    if fn_name == "web_search":
-                        res_content = "\n".join(helper_web_search(args.get("query", "")))
-                    elif fn_name == "fetch_webpage":
-                        res_content = helper_fetch_webpage(args.get("url", ""))
-                    elif fn_name == "get_my_balance":
-                        bal = user_credits.get(chat_id, 0)
-                        rem_msgs = 50 - user_message_count.get(chat_id, 0)
-                        res_content = f"Баланс: {bal} 🔷. Осталось сообщений в пакете чата: {rem_msgs}/50."
-                    elif fn_name == "clear_memory":
-                        user_chat_history[chat_id] = []
-                        save_data()
-                        res_content = "Память диалога успешно очищена."
-                    elif fn_name == "generate_image":
-                        p = args.get("prompt", "")
-                        asp = args.get("aspect_ratio", "16:9")
-                        cost = CREDIT_COSTS["image_pro"]
-                        can_gen = False
-
-                        with data_lock:
-                            if chat_id == ADMIN_ID or user_credits.get(chat_id, 0) >= cost:
-                                if chat_id != ADMIN_ID:
-                                    user_credits[chat_id] -= cost
-                                    user_credit_history[chat_id].append((time.time(), -cost, f"Агент: арт {asp}"))
-                                    save_data()
-                                can_gen = True
-
-                        if not can_gen:
-                            res_content = f"У юзера недостаточно токенов (нужно {cost} 🔷, баланс {user_credits.get(chat_id, 0)})."
-                        else:
-                            bot.send_message(chat_id, f"🎨 Агент генерирует изображение ({asp})...")
-                            full_p = f"{p}. {ASPECT_PROMPTS.get(asp, '')}" if asp in ASPECT_PROMPTS else p
-                            img_bytes = generate_image_flux(full_p)
-                            if img_bytes:
-                                out_b, _ = _prepare_image_bytes(img_bytes)
-                                bot.send_photo(chat_id, out_b or img_bytes, caption="🎨 Создано ИИ-агентом")
-                                res_content = "Картинка успешно создана и отправлена в чат юзеру."
-                            else:
-                                if chat_id != ADMIN_ID:
-                                    with data_lock:
-                                        user_credits[chat_id] += cost
-                                        save_data()
-                                res_content = "Ошибка генерации картинки (токены возвращены юзеру)."
-                    elif fn_name == "generate_multiscene_video":
-                        scenes = args.get("scenes", [])
-                        asp = args.get("aspect_ratio", "16:9")
-                        is_confirmed = args.get("confirmed_by_user", False)
-                        total_d = sum(s.get("duration", 3) for s in scenes)
-                        cost = total_d * 5
-
-                        if not is_confirmed:
-                            res_content = (
-                                f"СТОП! Правило безопасности платформы: вы НЕ можете запустить рендер видео без подтверждения юзером! "
-                                f"Выведи юзеру этот режиссерский сценарий (общая длительность {total_d} сек, цена {cost} 🔷) "
-                                f"и спроси его: 'Запускаем видеоролик в производство?'."
-                            )
-                        else:
-                            can_gen = False
-                            with data_lock:
-                                if chat_id == ADMIN_ID or user_credits.get(chat_id, 0) >= cost:
-                                    if chat_id != ADMIN_ID:
-                                        user_credits[chat_id] -= cost
-                                        user_credit_history[chat_id].append((time.time(), -cost, f"Агент: видео {total_d}с"))
-                                        save_data()
-                                    can_gen = True
-
-                            if not can_gen:
-                                res_content = f"Недостаточно 🔷. Нужно {cost}, баланс {user_credits.get(chat_id, 0)}."
-                            else:
-                                bot.send_message(chat_id, f"🎬 Принято! Агент отправляет сценарий в Kling 3.0 Pro ({total_d} сек)...")
-                                user_video_model[chat_id] = "kwaivgi/kling-v3.0-pro"
-                                user_video_params[chat_id] = {"duration": total_d, "aspect_ratio": asp, "audio": True, "resolution": "720p"}
-                                Thread(target=generate_video_async, args=(chat_id, None, None, None, scenes), daemon=True).start()
-                                res_content = "Генерация многосценового видео успешно запущена в фоновом потоке."
-
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": call_id,
-                        "name": fn_name,
-                        "content": str(res_content)
-                    })
-            else:
-                final_text = choice_msg.get("content", "")
-                history.append({"role": "user", "content": user_text})
-                history.append({"role": "assistant", "content": final_text})
-                user_chat_history[chat_id] = history[-20:]
-                return final_text
-        except Exception as e:
-            logging.error(f"[AGENT EXCEPTION] {e}")
-            return "⚠️ Произошла ошибка при работе ИИ-агента."
-
-    return "⚠️ Поиск не дал однозначного ответа."
+            answer = data["choices"][0]["message"]["content"]
+            history.append({"role": "user", "content": user_text})
+            history.append({"role": "assistant", "content": answer})
+            user_chat_history[chat_id] = history[-20:]
+            return answer
+        else:
+            return f"⚠️ Ошибка сети: {r.status_code}"
+    except Exception as e:
+        logging.error(f"Agent chat error: {e}")
+        return "⚠️ Ошибка при обработке запроса."
 
 # ================== IMAGE HELPERS ==================
 def _safe_resample():
@@ -1313,7 +1094,7 @@ def process_payment(message):
             save_data()
         bot.send_message(chat_id, f"✅ Оплата прошла! Начислено {pkg['credits']} 🔷.\nБаланс: {user_credits[chat_id]} 🔷")
 
-# --- CARD PAYMENT (manual) ---
+# --- CARD PAYMENT ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith("buy_card_"))
 def handle_card_payment(call):
     chat_id = call.message.chat.id
