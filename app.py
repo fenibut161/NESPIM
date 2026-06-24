@@ -959,7 +959,7 @@ def generate_video_async(chat_id, prompt=None, first_frame_b64=None, last_frame_
                 f_type = "first_frame" if idx == 0 else ("last_frame" if idx == len(multi_prompt)-1 else "reference")
                 frame_images.append({"type": "image_url", "image_url": {"url": d_url}, "frame_type": f_type})
             clean_mp.append(sc_dict)
-        payload["multi_prompt"] = clean_mp
+        payload["multi_prompts"] = clean_mp          # ← исправлено (было multi_prompt)
         model_display += " [Мультисцена Studio]"
     elif prompt:
         payload["prompt"] = prompt
