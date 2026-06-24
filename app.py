@@ -778,18 +778,33 @@ def generate_video_async(chat_id, prompt=None, first=None, last=None, multi_prom
     aud = params.get("audio", True)
     headers = _build_headers()
     payload = {"model": model, "duration": dur, "aspect_ratio": asp}
-    if multi_prompt:
+       if multi_prompt:
+        # Преобразуем многосценовый сценарий в обычный запрос с параметрами
         scenes_text = []
-        refs = []
+        # Собираем все фото для frame_images (first/last) и input_references
+        all_photos = []
         for i, s in enumerate(multi_prompt, 1):
             scene_dur = int(s.get("duration", s.get("dur", 3)))
             scenes_text.append(f"Scene {i} ({scene_dur}s): {s.get('prompt', '')}")
             if s.get("photo"):
-                refs.append({
-                    "type": "image_url",
-                    "image_url": {"url": f"data:image/jpeg;base64,{compress_image_if_needed(s['photo'])}"}
-                })
+                all_photos.append(s["photo"])
+
         payload["prompt"] = "\n\n".join(scenes_text)
+        # Добавляем frame_images: первый кадр = first_frame, последний = last_frame (если >1)
+        frames = []
+        if len(all_photos) > 0:
+            first_b64 = compress_image_if_needed(all_photos[0])
+            frames.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{first_b64}"}, "frame_type": "first_frame"})
+        if len(all_photos) > 1:
+            last_b64 = compress_image_if_needed(all_photos[-1])
+            frames.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{last_b64}"}, "frame_type": "last_frame"})
+        if frames:
+            payload["frame_images"] = frames
+        # Остальные фото (если есть) добавим в input_references, если модель поддерживает
+        if len(all_photos) > 2 and feats.get("references"):
+            refs = [{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{compress_image_if_needed(p)}"}} for p in all_photos[1:-1]]
+            if refs:
+                payload["input_references"] = refs
         model_name += " [Studio]"
         if refs: payload["input_references"] = refs
     elif prompt:
