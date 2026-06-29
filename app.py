@@ -15,7 +15,6 @@ import xml.etree.ElementTree as ET
 from collections import defaultdict
 from html import escape, unescape
 from threading import Thread, RLock
-
 import requests
 import telebot
 from flask import Flask, request, send_from_directory, jsonify
@@ -40,7 +39,6 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_VIDEO_URL = "https://openrouter.ai/api/v1/videos"
 ADMIN_ID = 534008787
 DATA_FILE = "bot_data.json"
-
 data_lock = RLock()
 logging.basicConfig(
     level=logging.INFO,
@@ -74,7 +72,6 @@ user_edit_aspect = {}
 # --- MODELS ---
 FLUX_MODEL = "black-forest-labs/flux.2-pro"
 SEEDREAM_MODEL = "bytedance-seed/seedream-4.5"
-
 ASPECT_PROMPTS = {
     "9:16": "vertical 9:16 portrait orientation, tall composition, full frame, mobile phone wallpaper format",
     "16:9": "horizontal 16:9 widescreen landscape orientation, cinematic wide composition",
@@ -84,23 +81,10 @@ ASPECT_PROMPTS = {
 
 # ================== VIDEO SIZE LOCK ==================
 VIDEO_SIZE_MAP = {
-    "16:9": {
-        "480p": (854, 480),
-        "720p": (1280, 720),
-        "1080p": (1920, 1080),
-    },
-    "9:16": {
-        "480p": (480, 854),
-        "720p": (720, 1280),
-        "1080p": (1080, 1920),
-    },
-    "1:1": {
-        "480p": (480, 480),
-        "720p": (720, 720),
-        "1080p": (1080, 1080),
-    },
+    "16:9": {"480p": (854, 480), "720p": (1280, 720), "1080p": (1920, 1080)},
+    "9:16": {"480p": (480, 854), "720p": (720, 1280), "1080p": (1080, 1920)},
+    "1:1": {"480p": (480, 480), "720p": (720, 720), "1080p": (1080, 1080)},
 }
-
 VIDEO_FORMATS = list(VIDEO_SIZE_MAP.keys())
 VIDEO_RESOLUTIONS = ["480p", "720p", "1080p"]
 
@@ -191,7 +175,6 @@ WEBAPP_HTML = r'''<!DOCTYPE html>
     <h1>🌙 Moon Web Studio</h1>
     <p>Отдельно: начальный кадр, конечный кадр, референсы, внешность героя. Итоговый MP4 приводится к выбранному размеру.</p>
 </div>
-
 <div class="card">
     <div class="card-title">Модель</div>
     <div class="grid">
@@ -201,13 +184,11 @@ WEBAPP_HTML = r'''<!DOCTYPE html>
     </div>
     <div class="hint" id="modelHint">Seedance 2.0: start/end кадры отдельно, hero + reference images отдельно, до 9 input references суммарно.</div>
 </div>
-
 <div class="card">
     <div class="card-title">Один промпт на всю историю</div>
     <textarea id="globalPrompt" placeholder="Опишите историю, движение камеры, действия, настроение. Например: Используй начальный кадр как старт сцены, конечный как финальный кадр. HERO сохранять неизменным. Storyboard references использовать для сцен и стиля..."></textarea>
     <div class="hint">Сейчас можно тестировать Seedance 2.0 даже с одним storyboard/start кадром: загрузите начальный кадр и промпт.</div>
 </div>
-
 <div class="card">
     <div class="card-title"><span>Начальный и конечный кадры</span><span class="pill">отдельные anchors</span></div>
     <div class="two">
@@ -221,7 +202,6 @@ END / last_frame
     </div>
     <div class="hint" id="anchorHint">Для Kling это главный режим: первый и последний кадр. Для Seedance/HappyHorse они передаются как frame_images, если модель заявляет поддержку.</div>
 </div>
-
 <div class="card" id="heroCard">
     <div class="card-title"><span>Внешность персонажа / HERO</span><span id="heroStatus">не задан</span></div>
     <div class="slot big" id="heroSlot" data-pick="hero"><div class="ph">＋
@@ -229,13 +209,11 @@ END / last_frame
 лицо, одежда, внешность</div></div>
     <div class="hint">Для Seedance/HappyHorse отправляется первым input reference и усиливается промптом. Для Kling поле отключается и не отправляется.</div>
 </div>
-
 <div class="card" id="refsCard">
     <div class="card-title"><span>Storyboard / reference images</span><span id="refsCount">0/9 refs</span></div>
     <div class="refs-grid" id="refsGrid"></div>
     <div class="hint" id="refsHint">Это НЕ начальный/конечный кадр. Это отдельные референсы стиля, сцен, продукта, локации. Лимит: hero + references до 9.</div>
 </div>
-
 <div class="card">
     <div class="card-title">Стороны кадра</div>
     <div class="grid3" id="aspectGrid">
@@ -244,7 +222,6 @@ END / last_frame
         <div class="btn" data-aspect="1:1">⬜ 1:1</div>
     </div>
 </div>
-
 <div class="card">
     <div class="card-title">Разрешение</div>
     <div class="grid3" id="resGrid">
@@ -254,15 +231,12 @@ END / last_frame
     </div>
     <div class="hint" id="sizeHint">Итоговый размер: 1280x720</div>
 </div>
-
 <div class="card">
     <div class="card-title">Длительность <span id="durText">8с</span></div>
     <div class="row"><span>4с</span><input id="dur" type="range" min="4" max="15" value="8"><span>15с</span></div>
 </div>
-
 <input type="file" id="hiddenFile" accept="image/*" style="display:none">
 <button type="button" class="main-btn" id="submitBtn">🚀 Запустить рендер (40 🔷)</button>
-
 <script>
 (function(){
     const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
@@ -281,48 +255,41 @@ END / last_frame
     let endFrame = null;
     let heroRef = null;
     let referenceImages = Array(9).fill(null);
-
     const $ = (id) => document.getElementById(id);
-
     function alertUser(text) {
         if (tg && tg.showAlert) tg.showAlert(text);
         else alert(text);
     }
-
     function setGroupActive(container, clicked) {
         container.querySelectorAll('.btn').forEach(b => b.classList.remove('active'));
         clicked.classList.add('active');
     }
-
     function modelKind() {
         if (currentModel.includes('kling')) return 'kling';
         if (currentModel.includes('happyhorse')) return 'happyhorse';
         return 'seedance';
     }
-
     function renderAnchorSlot(id, b64, label, placeholder) {
         const el = $(id);
         if (!el) return;
         if (b64) {
-            el.innerHTML = `<img src="data:image/jpeg;base64,${b64}"><div class="badge">${label}</div><div class="del" data-remove="${label.toLowerCase()}">×</div>`;
+            el.innerHTML = '<img src="data:image/jpeg;base64,' + b64 + '"><div class="badge">' + label + '</div><div class="del" data-remove="' + label.toLowerCase() + '">×</div>';
         } else {
-            el.innerHTML = `<div class="ph">${placeholder}</div>`;
+            el.innerHTML = '<div class="ph">' + placeholder + '</div>';
         }
     }
-
     function renderHero() {
         const slot = $('heroSlot');
         const status = $('heroStatus');
         if (!slot) return;
         if (heroRef) {
-            slot.innerHTML = `<img src="data:image/jpeg;base64,${heroRef}"><div class="badge">HERO</div><div class="del" data-remove="hero">×</div>`;
+            slot.innerHTML = '<img src="data:image/jpeg;base64,' + heroRef + '"><div class="badge">HERO</div><div class="del" data-remove="hero">×</div>';
             status.innerText = 'задан';
         } else {
-            slot.innerHTML = `<div class="ph">＋\nОтдельный референс героя\nлицо, одежда, внешность</div>`;
+            slot.innerHTML = '<div class="ph">＋\nОтдельный референс героя\nлицо, одежда, внешность</div>';
             status.innerText = 'не задан';
         }
     }
-
     function renderRefs() {
         const grid = $('refsGrid');
         grid.innerHTML = '';
@@ -331,18 +298,17 @@ END / last_frame
             div.className = 'slot';
             div.dataset.pickRef = String(i);
             if (f) {
-                div.innerHTML = `<img src="data:image/jpeg;base64,${f}"><div class="badge">REF ${i+1}</div><div class="del" data-remove-ref="${i}">×</div>`;
+                div.innerHTML = '<img src="data:image/jpeg;base64,' + f + '"><div class="badge">REF ' + (i+1) + '</div><div class="del" data-remove-ref="' + i + '">×</div>';
             } else {
-                div.innerHTML = `<div class="ph">＋\nReference ${i+1}</div>`;
+                div.innerHTML = '<div class="ph">＋\nReference ' + (i+1) + '</div>';
             }
             grid.appendChild(div);
         });
         const count = referenceImages.filter(Boolean).length;
         const total = count + (heroRef && modelKind() !== 'kling' ? 1 : 0);
-        $('refsCount').innerText = modelKind() === 'kling' ? 'Kling: refs off' : `${total}/9 refs`;
+        $('refsCount').innerText = modelKind() === 'kling' ? 'Kling: refs off' : total + '/9 refs';
         updateSummary();
     }
-
     function updateModelUI() {
         const kind = modelKind();
         const modelHint = $('modelHint');
@@ -355,10 +321,10 @@ END / last_frame
             refsCard.style.opacity = '0.45';
             refsHint.innerText = 'Для Kling refs отключены: используйте отдельные начальный и конечный кадры.';
         } else if (kind === 'happyhorse') {
-            modelHint.innerText = 'HappyHorse 1.1: start/end отдельно, hero + references отдельно.';
+            modelHint.innerText = 'HappyHorse 1.1: можно генерировать по референсам БЕЗ начального кадра. Start/end отдельно, hero + references отдельно.';
             heroCard.style.opacity = '1';
             refsCard.style.opacity = '1';
-            refsHint.innerText = 'Hero + reference images до 9 input references. Start/end не считаются refs.';
+            refsHint.innerText = 'Hero + reference images до 9 input references. Start/end не обязательны — можно обойтись без них.';
         } else {
             modelHint.innerText = 'Seedance 2.0: можно тестировать с одним start/storyboard кадром. Start/end отдельно, hero + references отдельно.';
             heroCard.style.opacity = '1';
@@ -367,12 +333,10 @@ END / last_frame
         }
         updateSummary();
     }
-
     function updateSizeHint() {
         const s = SIZE_MAP[currentAspect][currentRes];
-        $('sizeHint').innerText = `Итоговый размер: ${s[0]}x${s[1]}`;
+        $('sizeHint').innerText = 'Итоговый размер: ' + s[0] + 'x' + s[1];
     }
-
     function updateSummary() {
         const dur = parseInt($('dur').value || '8', 10);
         $('durText').innerText = dur + 'с';
@@ -380,14 +344,22 @@ END / last_frame
         const btn = $('submitBtn');
         const refsTotal = referenceImages.filter(Boolean).length + (heroRef && modelKind() !== 'kling' ? 1 : 0);
         const cost = dur * 5;
-        btn.disabled = false;
-        btn.innerText = `🚀 Запустить рендер (${cost} 🔷)`;
-        if (modelKind() !== 'kling' && refsTotal > 9) {
+        const kind = modelKind();
+
+        if (kind === 'kling' && !startFrame) {
+            btn.disabled = true;
+            btn.innerText = '⚠️ Kling требует START кадр';
+        } else if (kind !== 'kling' && refsTotal === 0 && !startFrame) {
+            btn.disabled = true;
+            btn.innerText = '⚠️ Нужно загрузить кадр или референс';
+        } else if (kind !== 'kling' && refsTotal > 9) {
             btn.disabled = true;
             btn.innerText = '⚠️ Лимит 9 refs: удалите часть кадров';
+        } else {
+            btn.disabled = false;
+            btn.innerText = '🚀 Запустить рендер (' + cost + ' 🔷)';
         }
     }
-
     function renderAll() {
         renderAnchorSlot('startSlot', startFrame, 'START', '＋\nНачальный кадр\nSTART / first_frame');
         renderAnchorSlot('endSlot', endFrame, 'END', '＋\nКонечный кадр\nEND / last_frame\nнеобязательно');
@@ -395,7 +367,6 @@ END / last_frame
         renderRefs();
         updateModelUI();
     }
-
     function pick(target, idx=null) {
         if (modelKind() === 'kling' && (target === 'hero' || target === 'ref')) {
             alertUser('Kling 3.0 Pro использует только отдельные START и END кадры. HERO и refs не отправляются.');
@@ -405,7 +376,6 @@ END / last_frame
         uploadIdx = idx;
         $('hiddenFile').click();
     }
-
     function compressImg(file) {
         return new Promise((resolve, reject) => {
             const r = new FileReader();
@@ -427,13 +397,21 @@ END / last_frame
             r.readAsDataURL(file);
         });
     }
-
     async function submitStudio() {
         const prompt = $('globalPrompt').value.trim();
         if (!prompt) { alertUser('Введите общий промпт для истории.'); return; }
-        if (!startFrame) { alertUser('Загрузите отдельный начальный кадр START.'); return; }
         const refsTotal = referenceImages.filter(Boolean).length + (heroRef && modelKind() !== 'kling' ? 1 : 0);
-        if (modelKind() !== 'kling' && refsTotal > 9) {
+        const kind = modelKind();
+
+        if (kind === 'kling' && !startFrame) {
+            alertUser('Kling 3.0 Pro требует загрузку отдельного начального кадра START.');
+            return;
+        }
+        if (kind !== 'kling' && refsTotal === 0 && !startFrame) {
+            alertUser('Загрузите хотя бы один кадр: START или HERO/reference.');
+            return;
+        }
+        if (kind !== 'kling' && refsTotal > 9) {
             alertUser('Seedance/HappyHorse принимают максимум 9 input references суммарно: HERO + reference images. START/END отдельно.');
             return;
         }
@@ -447,8 +425,8 @@ END / last_frame
             prompt: prompt,
             start_frame: startFrame,
             end_frame: endFrame,
-            hero_ref: modelKind() === 'kling' ? null : heroRef,
-            reference_images: modelKind() === 'kling' ? [] : referenceImages.filter(Boolean),
+            hero_ref: kind === 'kling' ? null : heroRef,
+            reference_images: kind === 'kling' ? [] : referenceImages.filter(Boolean),
             aspect_ratio: currentAspect,
             resolution: currentRes,
             duration: parseInt($('dur').value || '8', 10)
@@ -474,7 +452,6 @@ END / last_frame
             updateSummary();
         }
     }
-
     document.addEventListener('click', (e) => {
         const modelBtn = e.target.closest('[data-model]');
         if (modelBtn) {
@@ -526,7 +503,6 @@ END / last_frame
         }
         if (e.target.id === 'submitBtn') submitStudio();
     });
-
     $('dur').addEventListener('input', updateSummary);
     $('hiddenFile').addEventListener('change', async (e) => {
         const file = e.target.files && e.target.files[0];
@@ -544,7 +520,6 @@ END / last_frame
             e.target.value = '';
         }
     });
-
     renderAll();
 })();
 </script>
@@ -555,7 +530,6 @@ END / last_frame
 def load_data():
     global user_credits, user_credit_history, user_message_count, user_last_activity, user_chat_history
     data = None
-
     if GIST_ID and GITHUB_TOKEN:
         try:
             r = requests.get(
@@ -567,21 +541,18 @@ def load_data():
                 data = json.loads(r.json()["files"]["bot_data.json"]["content"])
         except Exception as e:
             logging.warning(f"[LOAD GIST] {e}")
-
     if not data:
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
         except Exception:
             data = {}
-
     user_credits = defaultdict(int, {int(k): v for k, v in data.get("credits", {}).items()})
     user_credit_history = defaultdict(list, {int(k): v for k, v in data.get("history", {}).items()})
     user_message_count = defaultdict(int, {int(k): v for k, v in data.get("messages", {}).items()})
     user_last_activity = defaultdict(float, {int(k): v for k, v in data.get("last_activity", {}).items()})
     user_chat_history = defaultdict(list, {int(k): v for k, v in data.get("chat_history", {}).items()})
     logging.info(f"[LOAD] {sum(user_credits.values())} credits")
-
 
 def save_data():
     with data_lock:
@@ -592,13 +563,11 @@ def save_data():
             "last_activity": dict(user_last_activity),
             "chat_history": dict(user_chat_history),
         }
-
     try:
         with open(DATA_FILE, "w", encoding="utf-8") as f:
             json.dump(snap, f, ensure_ascii=False, indent=2)
     except Exception as e:
         logging.warning(f"[SAVE FILE] {e}")
-
     if GIST_ID and GITHUB_TOKEN:
         def _g():
             try:
@@ -610,9 +579,7 @@ def save_data():
                 )
             except Exception as e:
                 logging.warning(f"[SAVE GIST] {e}")
-
         Thread(target=_g, daemon=True).start()
-
 
 load_data()
 
@@ -639,7 +606,6 @@ VIDEO_MODEL_FEATURES = {
 VIDEO_MODELS_CACHE = {}
 VIDEO_MODELS_CACHE_TIME = 0
 
-
 def _build_headers():
     return {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
@@ -648,21 +614,17 @@ def _build_headers():
         "X-Title": "TelegramBot",
     }
 
-
 def _build_auth_headers_only():
     return {"Authorization": f"Bearer {OPENROUTER_API_KEY}"} if OPENROUTER_API_KEY else {}
 
-
 def get_target_video_size(aspect_ratio, resolution):
     return VIDEO_SIZE_MAP.get(aspect_ratio, {}).get(resolution)
-
 
 def get_video_models_capabilities(force_refresh=False):
     global VIDEO_MODELS_CACHE, VIDEO_MODELS_CACHE_TIME
     now = time.time()
     if not force_refresh and VIDEO_MODELS_CACHE and (now - VIDEO_MODELS_CACHE_TIME < 3600):
         return VIDEO_MODELS_CACHE
-
     try:
         resp = requests.get("https://openrouter.ai/api/v1/videos/models", headers=_build_headers(), timeout=15)
         if resp.status_code == 200:
@@ -675,7 +637,6 @@ def get_video_models_capabilities(force_refresh=False):
         logging.warning(f"[VIDEO MODELS] {e}")
     return VIDEO_MODELS_CACHE
 
-
 def validate_video_request(model_id, params):
     asp = params.get("aspect_ratio")
     res = params.get("resolution")
@@ -683,11 +644,7 @@ def validate_video_request(model_id, params):
         return False, "Доступны только форматы 16:9, 9:16 и 1:1"
     if res not in VIDEO_SIZE_MAP[asp]:
         return False, "Доступны только разрешения 480p, 720p и 1080p"
-
-    caps = get_video_models_capabilities().get(model_id)
-    if not caps:
-        return True, None
-
+    caps = get_video_models_capabilities().get(model_id, {})
     errors = []
     dur = params.get("duration")
     if dur is not None and caps.get("supported_durations"):
@@ -700,16 +657,18 @@ def validate_video_request(model_id, params):
         if asp not in caps["supported_aspect_ratios"]:
             errors.append(f"Формат {asp} не поддерживается. Доступно: {caps.get('supported_aspect_ratios')}")
 
-    requested_frames = params.get("frame_types") or []
-    supported_frames = caps.get("supported_frame_images") or []
-    for ft in requested_frames:
-        if ft not in supported_frames:
-            errors.append(f"{ft} не поддерживается этой моделью")
+    # Для моделей с references — НЕ проверяем frame_types (могут работать по референсам без start/end)
+    feats = VIDEO_MODEL_FEATURES.get(model_id, {})
+    if not feats.get("references"):
+        requested_frames = params.get("frame_types") or []
+        supported_frames = caps.get("supported_frame_images") or []
+        for ft in requested_frames:
+            if ft not in supported_frames:
+                errors.append(f"{ft} не поддерживается этой моделью")
 
     if errors:
         return False, " | ".join(errors)
     return True, None
-
 
 PACKAGES = {
     "start": {"name": "Старт", "credits": 50, "price_stars": 250, "price_rub": 400, "desc": "50 🔷 на любые операции"},
@@ -734,7 +693,6 @@ def helper_web_search(query):
                         items.append(f"Новость: {title}")
             except Exception:
                 pass
-
         if len(items) < 3:
             url = "https://html.duckduckgo.com/html/"
             headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
@@ -743,93 +701,85 @@ def helper_web_search(query):
             snippets = re.findall(r'<a class="result__snippet"[^>]*>(.*?)</a>', text, re.DOTALL)
             clean = [re.sub(r'<.*?>', '', s).strip() for s in snippets[:3]]
             items.extend([c for c in clean if c])
-
         return items if items else ["Актуальных данных по запросу не обнаружено."]
     except Exception as e:
         return [f"Справка поиска: {e}"]
-
 
 def helper_fetch_webpage(url):
     try:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         r = requests.get(url, headers=headers, timeout=15)
         text = unescape(r.text)
-        text = re.sub(r'<style.*?>.*?</style>', '', text, flags=re.DOTALL | re.IGNORECASE)
-        text = re.sub(r'<script.*?>.*?</script>', '', text, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r'<style.*?>', ' ', text, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r'<script.*?>', ' ', text, flags=re.DOTALL | re.IGNORECASE)
         text = re.sub(r'<.*?>', ' ', text)
         text = re.sub(r'\s+', ' ', text).strip()
         return text[:2500] if text else "Веб-страница пустая."
     except Exception as e:
         return f"Не удалось прочитать ссылку: {e}"
 
-
 AGENT_TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "web_search",
-            "description": "Поиск актуальных новостей, фактов, документации или информации в интернете",
-            "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "fetch_webpage",
-            "description": "Прочесть текстовое содержимое веб-страницы по ссылке URL",
-            "parameters": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "generate_image",
-            "description": "Нарисовать и отправить юзеру картинку через нейросеть Flux Pro. Списывает 2 токена 🔷.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "prompt": {"type": "string"},
-                    "aspect_ratio": {"type": "string", "enum": ["16:9", "9:16", "1:1", "4:3"]},
-                },
-                "required": ["prompt", "aspect_ratio"],
+    {"type": "function", "function": {
+        "name": "web_search",
+        "description": "Поиск актуальных новостей, фактов, документации или информации в интернете",
+        "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+    }},
+    {"type": "function", "function": {
+        "name": "fetch_webpage",
+        "description": "Прочесть текстовое содержимое веб-страницы по ссылке URL",
+        "parameters": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]},
+    }},
+    {"type": "function", "function": {
+        "name": "generate_image",
+        "description": "Нарисовать и отправить юзеру картинку через нейросеть Flux Pro. Списывает 2 токена 🔷.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "prompt": {"type": "string"},
+                "aspect_ratio": {"type": "string", "enum": ["16:9", "9:16", "1:1", "4:3"]},
             },
+            "required": ["prompt", "aspect_ratio"],
         },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "generate_multiscene_video",
-            "description": "Снять кинематографичный многосценовый видеоролик через Seedance 2.0 (5 🔷/сек).",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "scenes": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {"prompt": {"type": "string"}, "duration": {"type": "integer"}},
-                            "required": ["prompt", "duration"],
-                        },
+    }},
+    {"type": "function", "function": {
+        "name": "generate_multiscene_video",
+        "description": "Снять кинематографичный многосценовый видеоролик через Seedance 2.0 (5 🔷/сек).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "scenes": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"prompt": {"type": "string"}, "duration": {"type": "integer"}},
+                        "required": ["prompt", "duration"],
                     },
-                    "aspect_ratio": {"type": "string", "enum": ["16:9", "9:16", "1:1"]},
-                    "confirmed_by_user": {"type": "boolean"},
                 },
-                "required": ["scenes", "aspect_ratio", "confirmed_by_user"],
+                "aspect_ratio": {"type": "string", "enum": ["16:9", "9:16", "1:1"]},
+                "confirmed_by_user": {"type": "boolean"},
             },
+            "required": ["scenes", "aspect_ratio", "confirmed_by_user"],
         },
-    },
-    {"type": "function", "function": {"name": "get_my_balance", "description": "Проверить текущий баланс токенов 🔷 пользователя", "parameters": {"type": "object", "properties": {}}}},
-    {"type": "function", "function": {"name": "clear_memory", "description": "Очистить память диалога с пользователем", "parameters": {"type": "object", "properties": {}}}},
+    }},
+    {"type": "function", "function": {
+        "name": "get_my_balance",
+        "description": "Проверить текущий баланс токенов 🔷 пользователя",
+        "parameters": {"type": "object", "properties": {}}
+    }},
+    {"type": "function", "function": {
+        "name": "clear_memory",
+        "description": "Очистить память диалога с пользователем",
+        "parameters": {"type": "object", "properties": {}}
+    }},
 ]
-
 
 def extract_deepseek_tools(choice_msg):
     if choice_msg.get("tool_calls"):
         return choice_msg["tool_calls"], choice_msg.get("content", "")
     content = choice_msg.get("content", "") or ""
-    if "<｜tool" in content or "<|tool" in content:
+    if "＜｜tool" in content or "＜|tool" in content:
         raw_matches = re.findall(
-            r"<[｜\|]tool.*?begin[｜\|]>function<[｜\|]tool.*?sep[｜\|]>(\w+)\s*\n?({[^<]+})",
+            r"＜[｜|]tool.*?begin[｜|]＞function＜[｜|]tool.*?sep[｜|]＞(\w+)\s*\n?({[^＜]+})",
             content,
         )
         t_calls = []
@@ -840,26 +790,22 @@ def extract_deepseek_tools(choice_msg):
                 "function": {"name": fn_name.strip(), "arguments": arg_str.strip()},
             })
         if t_calls:
-            clean_text = re.split(r"<[｜\|]tool", content)[0].strip()
+            clean_text = re.split(r"＜[｜|]tool", content)[0].strip()
             return t_calls, clean_text
     return None, content
-
 
 def run_agent(chat_id, user_text):
     history = list(user_chat_history.get(chat_id, []))
     if len(history) > 20:
         history = history[-18:]
-
     system_prompt = (
         "Ты — персональный ИИ-агент и кинорежиссер Moon Web Studio в Telegram. Отвечай понятно на русском.\n"
         "Инструменты: web_search, fetch_webpage, generate_image, generate_multiscene_video, get_my_balance, clear_memory.\n"
         "Не делай больше одного web_search за ответ.\n"
         "Запрещено запускать generate_multiscene_video без явного подтверждения пользователя. Сначала сценарий, цена 5 🔷/сек, вопрос о подтверждении."
     )
-
     messages = [{"role": "system", "content": system_prompt}] + history + [{"role": "user", "content": user_text}]
     headers = _build_headers()
-
     for _turn in range(4):
         payload = {"model": "deepseek/deepseek-chat", "messages": messages, "tools": AGENT_TOOLS}
         try:
@@ -869,10 +815,8 @@ def run_agent(chat_id, user_text):
             data = r.json()
             if "error" in data:
                 return f"❌ Ошибка API: {data['error'].get('message', 'limit')}"
-
             choice_msg = data["choices"][0]["message"]
             tool_calls, clean_content = extract_deepseek_tools(choice_msg)
-
             if not tool_calls:
                 final_text = choice_msg.get("content", "")
                 history.append({"role": "user", "content": user_text})
@@ -880,11 +824,9 @@ def run_agent(chat_id, user_text):
                 user_chat_history[chat_id] = history[-20:]
                 save_data()
                 return final_text
-
             choice_msg["content"] = clean_content
             choice_msg["tool_calls"] = tool_calls
             messages.append(choice_msg)
-
             for tc in tool_calls:
                 fn_name = tc["function"]["name"]
                 fn_args = tc["function"].get("arguments", "{}")
@@ -893,7 +835,6 @@ def run_agent(chat_id, user_text):
                     args = json.loads(fn_args)
                 except Exception:
                     args = {}
-
                 res_content = ""
                 if fn_name == "web_search":
                     res_content = "\n".join(helper_web_search(args.get("query", "")))
@@ -926,7 +867,7 @@ def run_agent(chat_id, user_text):
                         full_p = f"{p}. {ASPECT_PROMPTS.get(asp, '')}" if asp in ASPECT_PROMPTS else p
                         img_bytes = generate_image_flux(full_p)
                         if img_bytes:
-                            out_b, _ = prepare_image_bytes(img_bytes)
+                            out_b, err = prepare_image_bytes(img_bytes)
                             bot.send_photo(chat_id, out_b or img_bytes, caption="🎨 Создано ИИ-агентом")
                             res_content = "Картинка успешно создана и отправлена."
                         else:
@@ -952,12 +893,10 @@ def run_agent(chat_id, user_text):
                             user_video_params[chat_id] = {"duration": total_d, "aspect_ratio": asp, "audio": True, "resolution": "720p"}
                             Thread(target=generate_video_async, args=(chat_id, None, None, None, scenes), daemon=True).start()
                             res_content = "Генерация многосценового видео запущена."
-
                 messages.append({"role": "tool", "tool_call_id": call_id, "name": fn_name, "content": str(res_content)})
         except Exception as e:
             logging.error(f"[AGENT] {e}")
             return "⚠️ Произошла ошибка при работе ИИ-агента."
-
     return "⚠️ Поиск не дал однозначного ответа."
 
 # ================== IMAGE HELPERS ==================
@@ -966,7 +905,6 @@ def _safe_resample():
         return Image.Resampling.LANCZOS
     except AttributeError:
         return Image.LANCZOS
-
 
 def _parse_image_response(resp):
     if resp.status_code != 200:
@@ -982,7 +920,6 @@ def _parse_image_response(resp):
             img_url = msg["content"]
         else:
             return None, msg.get("content", "Нет изображения в ответе")
-
         if img_url.startswith("data:image/"):
             return base64.b64decode(img_url.split(",", 1)[1]), None
         rr = requests.get(img_url, timeout=30)
@@ -991,7 +928,6 @@ def _parse_image_response(resp):
         return None, f"Не удалось скачать изображение: HTTP {rr.status_code}"
     except Exception as e:
         return None, str(e)
-
 
 def prepare_image_bytes(img_data, quality=95, max_size_mb=5):
     try:
@@ -1009,7 +945,6 @@ def prepare_image_bytes(img_data, quality=95, max_size_mb=5):
     except Exception as e:
         return None, str(e)
 
-
 def generate_image_flux(prompt):
     payload = {"model": FLUX_MODEL, "messages": [{"role": "user", "content": prompt}], "modalities": ["image"]}
     try:
@@ -1018,7 +953,6 @@ def generate_image_flux(prompt):
     except Exception as e:
         logging.error(f"Flux generation error: {e}")
         return None
-
 
 def edit_image_flux(prompt, image_base64):
     payload = {
@@ -1039,7 +973,6 @@ def edit_image_flux(prompt, image_base64):
         logging.error(f"Flux edit error: {e}")
         return None, str(e)
 
-
 def generate_image_seedream(prompt):
     payload = {"model": SEEDREAM_MODEL, "messages": [{"role": "user", "content": prompt}], "modalities": ["image"]}
     try:
@@ -1048,7 +981,6 @@ def generate_image_seedream(prompt):
     except Exception as e:
         logging.error(f"Seedream generation error: {e}")
         return None
-
 
 def edit_image_seedream(prompt, image_base64):
     payload = {
@@ -1080,23 +1012,18 @@ def compress_image_if_needed(b64_str, max_size=(1280, 1280), quality=86):
     except Exception:
         return b64_str
 
-
 def is_valid_mp4(d):
     return bool(d and len(d) > 500 and b"ftyp" in d[:256])
-
 
 def normalize_video_bytes(video_bytes, aspect_ratio, resolution):
     target = get_target_video_size(aspect_ratio, resolution)
     if not target:
         return video_bytes, None
-
     width, height = target
     size_text = f"{width}x{height}"
-
     if not shutil.which("ffmpeg"):
         logging.warning("[FFMPEG] ffmpeg not found. Video was not normalized.")
         return video_bytes, f"{size_text} requested, ffmpeg not installed"
-
     src_path = None
     out_path = None
     try:
@@ -1104,7 +1031,6 @@ def normalize_video_bytes(video_bytes, aspect_ratio, resolution):
             src.write(video_bytes)
             src_path = src.name
         out_path = src_path + "_normalized.mp4"
-
         vf = (
             f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
             f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,"
@@ -1125,7 +1051,6 @@ def normalize_video_bytes(video_bytes, aspect_ratio, resolution):
         if p.returncode != 0:
             logging.warning(f"[FFMPEG] normalize failed: {p.stderr.decode(errors='ignore')[:1000]}")
             return video_bytes, f"{size_text} requested, normalize failed"
-
         with open(out_path, "rb") as f:
             normalized = f.read()
         if is_valid_mp4(normalized):
@@ -1142,7 +1067,6 @@ def normalize_video_bytes(video_bytes, aspect_ratio, resolution):
             except Exception:
                 pass
 
-
 def send_video_safe(chat_id, data, caption="✅ Ваше видео готово!"):
     try:
         params = user_video_params.get(chat_id, {})
@@ -1153,7 +1077,6 @@ def send_video_safe(chat_id, data, caption="✅ Ваше видео готово
             data = normalized_data
         if size_text:
             caption = f"{caption}\n📐 Формат: {asp}, {res}, {size_text}"
-
         f = io.BytesIO(data)
         f.name = "video.mp4"
         bot.send_video(chat_id, f, caption=caption, supports_streaming=True, timeout=180)
@@ -1169,7 +1092,6 @@ def send_video_safe(chat_id, data, caption="✅ Ваше видео готово
             logging.warning(f"[SEND VIDEO] send_document failed: {e2}")
             return False
 
-
 def refund_video_credits(chat_id, amount, reason="Возврат за видео"):
     if not amount or chat_id == ADMIN_ID:
         return
@@ -1178,14 +1100,12 @@ def refund_video_credits(chat_id, amount, reason="Возврат за видео
         user_credit_history[chat_id].append((time.time(), int(amount), reason))
         save_data()
 
-
 def image_b64_to_openrouter_url(chat_id, b64_str, label="ref"):
     try:
         clean_b64 = compress_image_if_needed(b64_str, max_size=(1280, 1280), quality=86)
         raw = base64.b64decode(clean_b64)
-        prepared, _ = prepare_image_bytes(raw, quality=88, max_size_mb=8)
+        prepared, err = prepare_image_bytes(raw, quality=88, max_size_mb=8)
         raw = prepared or raw
-
         host = os.getenv("RENDER_EXTERNAL_HOSTNAME") or os.getenv("WEBHOOK_HOST")
         if host:
             os.makedirs("static/uploads", exist_ok=True)
@@ -1200,21 +1120,17 @@ def image_b64_to_openrouter_url(chat_id, b64_str, label="ref"):
         logging.warning(f"[IMG URL] fallback data-uri: {e}")
         return f"data:image/jpeg;base64,{b64_str}"
 
-
 def download_completed_video(job, headers=None):
     urls = []
     for u in (job.get("unsigned_urls") or []):
         if u and u not in urls:
             urls.append(u)
-
     job_id = job.get("id") or job.get("generation_id")
     if job_id:
         urls.append(f"https://openrouter.ai/api/v1/videos/{job_id}/content?index=0")
         urls.append(f"https://openrouter.ai/api/v1/videos/{job_id}/content")
-
     fallback_link = (job.get("unsigned_urls") or [None])[0]
     auth_headers = _build_auth_headers_only()
-
     for u in urls:
         try:
             use_auth = u.startswith("https://openrouter.ai/api/")
@@ -1227,29 +1143,22 @@ def download_completed_video(job, headers=None):
             ctype = (vr.headers.get("content-type") or "").lower()
             size = len(vr.content or b"")
             logging.info(f"[VIDEO DOWNLOAD] url={u} final={vr.url} status={vr.status_code} type={ctype} size={size}")
-
             if vr.status_code != 200:
                 continue
-
             if "application/json" in ctype:
                 logging.warning(f"[VIDEO DOWNLOAD] JSON instead of video from {u}: {vr.text[:500]}")
                 continue
-
             if size > 500 and (b"ftyp" in vr.content[:256] or "video/" in ctype or "octet-stream" in ctype):
                 return vr.content, fallback_link
-
             logging.warning(f"[VIDEO DOWNLOAD] bad response {vr.status_code} {ctype} {size} from {u}")
         except Exception as e:
             logging.warning(f"[VIDEO DOWNLOAD] {e} from {u}")
-
     return None, fallback_link
-
 
 def poll_video_task(polling_url, headers, chat_id, status_message_id, model_display="", refund_cost=0):
     start_time = time.time()
     last_edit = 0
     poll_headers = _build_auth_headers_only()
-
     for attempt in range(1, 181):
         time.sleep(8)
         try:
@@ -1257,14 +1166,12 @@ def poll_video_task(polling_url, headers, chat_id, status_message_id, model_disp
             if resp.status_code != 200:
                 logging.warning(f"[POLL] HTTP {resp.status_code}: {resp.text[:200]}")
                 continue
-
             data = resp.json()
             status = data.get("status", "unknown")
             progress = data.get("progress")
             elapsed = int(time.time() - start_time)
             mins = elapsed // 60
             text = ""
-
             if status in ("in_progress", "processing", "pending", "running", "queued"):
                 if progress and progress > 5:
                     filled = int(progress / 10)
@@ -1282,13 +1189,11 @@ def poll_video_task(polling_url, headers, chat_id, status_message_id, model_disp
                     else:
                         stage = "Финализация и кодирование"
                     text = f"🎬 <b>{model_display}</b>\n⏳ {stage}...\n⏱ Прошло: {mins} мин\n🔄 Опрос #{attempt} (OpenRouter)"
-
             elif status == "completed":
                 try:
                     bot.edit_message_text("✅ Генерация завершена, скачиваю и нормализую видео...", chat_id, status_message_id)
                 except Exception:
                     pass
-
                 try:
                     video_bytes, fallback_link = download_completed_video(data)
                     if video_bytes:
@@ -1299,14 +1204,12 @@ def poll_video_task(polling_url, headers, chat_id, status_message_id, model_disp
                             except Exception:
                                 pass
                             return
-
                     if fallback_link:
                         try:
                             bot.send_message(chat_id, f"✅ Видео готово, но Telegram не принял файл. Ссылка для скачивания:\n{fallback_link}")
                             return
                         except Exception:
                             pass
-
                     refund_video_credits(chat_id, refund_cost, "Возврат: видео не удалось скачать/отправить")
                     try:
                         bot.edit_message_text("⚠️ Видео сгенерировано, но файл не удалось скачать или отправить. 🔷 возвращены.", chat_id, status_message_id)
@@ -1320,7 +1223,6 @@ def poll_video_task(polling_url, headers, chat_id, status_message_id, model_disp
                     except Exception:
                         pass
                 return
-
             elif status in ("failed", "cancelled", "expired"):
                 err = data.get("error", status)
                 refund_video_credits(chat_id, refund_cost, f"Возврат: видео {status}")
@@ -1329,7 +1231,6 @@ def poll_video_task(polling_url, headers, chat_id, status_message_id, model_disp
                 except Exception:
                     pass
                 return
-
             now = time.time()
             if text and now - last_edit > 11:
                 try:
@@ -1339,13 +1240,11 @@ def poll_video_task(polling_url, headers, chat_id, status_message_id, model_disp
                     pass
         except Exception as e:
             logging.warning(f"[POLL] {e}")
-
     refund_video_credits(chat_id, refund_cost, "Возврат: истекло ожидание видео")
     try:
         bot.edit_message_text("⏰ Время ожидания вышло. Видео не доставлено, 🔷 возвращены.", chat_id, status_message_id)
     except Exception:
         pass
-
 
 def generate_video_async(chat_id, prompt=None, first=None, last=None, multi_prompt=None, references=None):
     params = user_video_params.get(chat_id, {})
@@ -1358,7 +1257,6 @@ def generate_video_async(chat_id, prompt=None, first=None, last=None, multi_prom
         "alibaba/happyhorse-1.1": "HappyHorse 1.1",
         "kwaivgi/kling-v3.0-pro": "Kling 3.0 Pro",
     }.get(model, model)
-
     asp = params.get("aspect_ratio", "16:9")
     res = params.get("resolution", "720p")
     aud = bool(params.get("audio", True))
@@ -1408,31 +1306,27 @@ def generate_video_async(chat_id, prompt=None, first=None, last=None, multi_prom
     caps = get_video_models_capabilities().get(model, {})
     supported_frames = caps.get("supported_frame_images") or []
     frame_types = []
-    frames_payload = []
 
+    # Только отправляем frame_images если модель поддерживает и кадр передан
     if first and "first_frame" in supported_frames:
-        frames_payload.append({
+        payload["frame_images"] = payload.get("frame_images", [])
+        payload["frame_images"].append({
             "type": "image_url",
             "image_url": {"url": image_b64_to_openrouter_url(chat_id, first, "first")},
             "frame_type": "first_frame",
         })
         frame_types.append("first_frame")
-    elif first:
-        logging.info(f"[VIDEO] {model} does not report first_frame support. Start frame not sent as frame_images.")
 
     if last and "last_frame" in supported_frames:
-        frames_payload.append({
+        payload["frame_images"] = payload.get("frame_images", [])
+        payload["frame_images"].append({
             "type": "image_url",
             "image_url": {"url": image_b64_to_openrouter_url(chat_id, last, "last")},
             "frame_type": "last_frame",
         })
         frame_types.append("last_frame")
-    elif last:
-        logging.info(f"[VIDEO] {model} does not report last_frame support. End frame not sent as frame_images.")
 
-    if frames_payload:
-        payload["frame_images"] = frames_payload
-
+    # references — для моделей с references=True (Seedance, HappyHorse)
     if feats.get("references") and references:
         payload["input_references"] = [
             {"type": "image_url", "image_url": {"url": image_b64_to_openrouter_url(chat_id, b64, f"ref{i+1}")}}
@@ -1445,15 +1339,17 @@ def generate_video_async(chat_id, prompt=None, first=None, last=None, multi_prom
                 "Use the other references for storyboard, scene, style, product, location and composition consistency."
             )
 
-    is_valid, error_msg = validate_video_request(model, {
-        "duration": dur,
-        "resolution": res,
-        "aspect_ratio": asp,
-        "frame_types": frame_types,
-    })
-    if not is_valid:
-        bot.send_message(chat_id, f"❌ Модель не поддерживает выбранные параметры: {error_msg}\n🔷 не списаны.")
-        return False
+    # Валидация frame_types только для моделей БЕЗ references (Kling)
+    if not feats.get("references"):
+        is_valid, error_msg = validate_video_request(model, {
+            "duration": dur,
+            "resolution": res,
+            "aspect_ratio": asp,
+            "frame_types": frame_types,
+        })
+        if not is_valid:
+            bot.send_message(chat_id, f"❌ Модель не поддерживает выбранные параметры: {error_msg}\n🔷 не списаны.")
+            return False
 
     with data_lock:
         if chat_id != ADMIN_ID:
@@ -1474,7 +1370,6 @@ def generate_video_async(chat_id, prompt=None, first=None, last=None, multi_prom
     try:
         r = requests.post(OPENROUTER_VIDEO_URL, json=payload, headers=headers, timeout=60)
         logging.info(f"[VIDEO] status={r.status_code} body={r.text[:800]}")
-
         if r.status_code not in (200, 202):
             refund_video_credits(chat_id, cost, f"Возврат: OpenRouter HTTP {r.status_code}")
             bot.send_message(chat_id, f"❌ Ошибка OpenRouter {r.status_code}: {r.text[:500]}\n🔷 возвращены.")
@@ -1510,7 +1405,6 @@ def generate_video_async(chat_id, prompt=None, first=None, last=None, multi_prom
                     return True
             except Exception as ex:
                 logging.error(f"[ASYNC COMPLETED ERR] {ex}")
-
             refund_video_credits(chat_id, cost, "Возврат: нет файла видео")
             bot.send_message(chat_id, "❌ Видео не удалось получить от провайдера. 🔷 возвращены.")
             return False
@@ -1518,6 +1412,7 @@ def generate_video_async(chat_id, prompt=None, first=None, last=None, multi_prom
         refund_video_credits(chat_id, cost, "Возврат: неожиданный ответ видео")
         bot.send_message(chat_id, "❌ Неожиданный ответ от провайдера. 🔷 возвращены.")
         return False
+
     except Exception as e:
         logging.error(f"VIDEO EXC: {e}")
         refund_video_credits(chat_id, cost, "Возврат: ошибка связи видео")
@@ -1535,10 +1430,8 @@ def main_menu_keyboard():
     )
     return m
 
-
 def back_keyboard():
     return ReplyKeyboardMarkup(resize_keyboard=True).add(KeyboardButton("🔙 Главное меню"))
-
 
 def video_model_keyboard():
     mk = InlineKeyboardMarkup(row_width=1)
@@ -1549,7 +1442,6 @@ def video_model_keyboard():
     )
     return mk
 
-
 def video_params_keyboard(chat_id):
     p = user_video_params.get(chat_id, {})
     model = user_video_model.get(chat_id, "bytedance/seedance-2.0")
@@ -1558,21 +1450,17 @@ def video_params_keyboard(chat_id):
     r = p.get("resolution", "720p")
     a = p.get("audio", True)
     asp = p.get("aspect_ratio", "16:9")
-
     mk = InlineKeyboardMarkup(row_width=4)
     dur_options = [x for x in [4, 8, 12, 15] if not caps.get("supported_durations") or x in caps.get("supported_durations", [])]
     if not dur_options:
         dur_options = [5, 10, 15]
     mk.add(*[InlineKeyboardButton(f"{'✅' if d == x else '⬜'} {x}с", callback_data=f"vid_dur_{x}") for x in dur_options])
-
     caps_res = caps.get("supported_resolutions") or VIDEO_RESOLUTIONS
     res_options = [x for x in VIDEO_RESOLUTIONS if x in caps_res] or VIDEO_RESOLUTIONS
     mk.add(*[InlineKeyboardButton(f"{'✅' if r == x else '⬜'} {x}", callback_data=f"vid_res_{x}") for x in res_options])
-
     caps_asp = caps.get("supported_aspect_ratios") or VIDEO_FORMATS
     asp_options = [x for x in VIDEO_FORMATS if x in caps_asp] or VIDEO_FORMATS
     mk.add(*[InlineKeyboardButton(f"{'✅' if asp == x else '⬜'} {x}", callback_data=f"vid_aspect_{x.replace(':', '_')}") for x in asp_options])
-
     if VIDEO_MODEL_FEATURES.get(model, {}).get("audio"):
         mk.add(
             InlineKeyboardButton(f"{'✅' if a else '⬜'} Со звуком", callback_data="vid_audio_true"),
@@ -1630,7 +1518,6 @@ if bot:
         model = user_generate_model.get(chat, "flux")
         aspect = user_generate_aspect.get(chat, "16:9")
         cost = CREDIT_COSTS["image_pro"]
-
         with data_lock:
             if chat != ADMIN_ID and user_credits.get(chat, 0) < cost:
                 bot.send_message(chat, f"❌ Недостаточно 🔷. Нужно {cost}")
@@ -1639,13 +1526,11 @@ if bot:
                 user_credits[chat] -= cost
                 user_credit_history[chat].append((time.time(), -cost, f"Генерация {model} {aspect}"))
                 save_data()
-
         bot.send_message(chat, "🎨 Генерирую изображение...")
         full_p = f"{prompt}. {ASPECT_PROMPTS.get(aspect, '')}" if aspect in ASPECT_PROMPTS else prompt
         img_bytes = generate_image_flux(full_p) if model == "flux" else generate_image_seedream(full_p)
-
         if img_bytes:
-            out_b, _ = prepare_image_bytes(img_bytes)
+            out_b, err = prepare_image_bytes(img_bytes)
             bot.send_photo(chat, out_b or img_bytes, caption=f"🎨 Готово! ({aspect})")
         else:
             with data_lock:
@@ -1653,7 +1538,6 @@ if bot:
                     user_credits[chat] += cost
                     save_data()
             bot.send_message(chat, "❌ Ошибка генерации. Токены 🔷 возвращены.")
-
         user_state.pop(chat, None)
 
     @bot.message_handler(func=lambda m: m.text == "🎨 Редактировать фото")
@@ -1706,11 +1590,9 @@ if bot:
         b64 = user_pending_photo.get(chat)
         face_mode = user_face_mode.get(chat, False)
         cost = CREDIT_COSTS["edit_pro"]
-
         if not b64:
             bot.send_message(chat, "❌ Фото не найдено. Начните заново.")
             return
-
         with data_lock:
             if chat != ADMIN_ID and user_credits.get(chat, 0) < cost:
                 bot.send_message(chat, f"❌ Недостаточно 🔷. Нужно {cost}.")
@@ -1719,14 +1601,12 @@ if bot:
                 user_credits[chat] -= cost
                 user_credit_history[chat].append((time.time(), -cost, f"Редактирование {model}"))
                 save_data()
-
         bot.send_message(chat, "🎨 Редактирую фото...")
         if face_mode:
             prompt = f"Keep the person's face exactly the same, only change the environment, clothing, background, lighting or style according to: {prompt}"
-
         img_bytes, err = edit_image_flux(prompt, b64) if model == "flux" else edit_image_seedream(prompt, b64)
         if img_bytes:
-            out_b, _ = prepare_image_bytes(img_bytes)
+            out_b, err2 = prepare_image_bytes(img_bytes)
             bot.send_photo(chat, out_b or img_bytes, caption="🎨 Готово!")
         else:
             with data_lock:
@@ -1815,7 +1695,6 @@ if bot:
         data = call.data
         bot.answer_callback_query(call.id)
         params = user_video_params.setdefault(chat, {})
-
         if data == "vid_params_done":
             try:
                 bot.edit_message_reply_markup(chat, call.message.message_id, reply_markup=None)
@@ -1824,7 +1703,6 @@ if bot:
             user_state[chat] = None
             proceed_after_video_params(chat)
             return
-
         if data.startswith("vid_dur_"):
             params["duration"] = int(data.split("_")[-1])
         elif data.startswith("vid_res_"):
@@ -1837,7 +1715,6 @@ if bot:
             params["audio"] = True
         elif data == "vid_audio_false":
             params["audio"] = False
-
         try:
             bot.edit_message_reply_markup(chat, call.message.message_id, reply_markup=video_params_keyboard(chat))
         except Exception:
@@ -1913,7 +1790,6 @@ if bot:
         for key, pkg in PACKAGES.items():
             text += f"<b>{pkg['name']}</b>: {pkg['credits']} 🔷 — {pkg['price_stars']} ⭐️ / {pkg['price_rub']} ₽\n"
         bot.send_message(chat, text, parse_mode="HTML")
-
         mk = InlineKeyboardMarkup(row_width=2)
         for key, pkg in PACKAGES.items():
             mk.add(
@@ -2052,6 +1928,7 @@ if bot:
             m.chat.id,
             "Инструкция: используйте кнопки меню.\n\n"
             "Видео: Moon Web Studio теперь разделяет START, END, HERO и reference images.\n"
+            "HappyHorse 1.1: можно генерировать по референсам БЕЗ начального кадра.\n"
             "Итоговый MP4 приводится к выбранному размеру: 480p/720p/1080p и 16:9/9:16/1:1."
         )
 
@@ -2077,7 +1954,6 @@ if bot:
 @app.route("/api/webapp_submit_video", methods=["POST"])
 def webapp_submit_video():
     data = request.json or {}
-
     uid = int(data.get("user_id", 0))
     model = data.get("model", "bytedance/seedance-2.0")
     if model not in VIDEO_MODEL_FEATURES:
@@ -2097,8 +1973,8 @@ def webapp_submit_video():
     end_frame = data.get("end_frame")
     hero_ref = data.get("hero_ref")
     reference_images = [x for x in (data.get("reference_images") or []) if x]
-
     old_frames = [x for x in (data.get("frames") or []) if x]
+
     if old_frames and not start_frame:
         start_frame = old_frames[0]
     if old_frames and not end_frame and len(old_frames) > 1:
@@ -2120,14 +1996,18 @@ def webapp_submit_video():
     if not uid or not prompt:
         return jsonify({"ok": False, "error": "Нужен user_id и промпт"}), 400
 
-    max_refs = int(VIDEO_MODEL_FEATURES.get(model, {}).get("max_image_refs", 9))
-    if VIDEO_MODEL_FEATURES.get(model, {}).get("references"):
+    feats = VIDEO_MODEL_FEATURES.get(model, {})
+    max_refs = int(feats.get("max_image_refs", 9))
+
+    if feats.get("references"):
+        # Модели с references (Seedance, HappyHorse) — НЕ требуют start_frame
         refs_count = len(reference_images) + (1 if hero_ref else 0)
         if refs_count > max_refs:
             return jsonify({"ok": False, "error": f"Максимум {max_refs} референсов суммарно: HERO + reference images"}), 400
-        if not start_frame and refs_count < 1:
-            return jsonify({"ok": False, "error": "Для Seedance/HappyHorse загрузите START или хотя бы один HERO/reference storyboard кадр"}), 400
+        if refs_count < 1 and not start_frame:
+            return jsonify({"ok": False, "error": "Загрузите хотя бы один кадр: START или HERO/reference"}), 400
     else:
+        # Kling — требует start_frame
         refs_count = 0
         hero_ref = None
         reference_images = []
@@ -2142,14 +2022,16 @@ def webapp_submit_video():
     if end_frame and "last_frame" in supported_frames:
         frame_types.append("last_frame")
 
-    is_valid, error_msg = validate_video_request(model, {
-        "duration": duration,
-        "resolution": res,
-        "aspect_ratio": asp,
-        "frame_types": frame_types,
-    })
-    if not is_valid:
-        return jsonify({"ok": False, "error": error_msg}), 400
+    # Валидация frame_types — только для моделей БЕЗ references
+    if not feats.get("references"):
+        is_valid, error_msg = validate_video_request(model, {
+            "duration": duration,
+            "resolution": res,
+            "aspect_ratio": asp,
+            "frame_types": frame_types,
+        })
+        if not is_valid:
+            return jsonify({"ok": False, "error": error_msg}), 400
 
     cost = duration * 5
     with data_lock:
@@ -2161,10 +2043,10 @@ def webapp_submit_video():
         "alibaba/happyhorse-1.1": "HappyHorse 1.1",
         "kwaivgi/kling-v3.0-pro": "Kling 3.0 Pro",
     }.get(model, model)
-    target_w, target_h = get_target_video_size(asp, res)
 
+    target_w, target_h = get_target_video_size(asp, res)
     try:
-        if VIDEO_MODEL_FEATURES.get(model, {}).get("references"):
+        if feats.get("references"):
             ref_label = f", {refs_count} refs"
         else:
             ref_label = ", first/last frame"
@@ -2180,7 +2062,7 @@ def webapp_submit_video():
     user_video_params[uid] = {"duration": duration, "aspect_ratio": asp, "resolution": res, "audio": True}
 
     references = []
-    if VIDEO_MODEL_FEATURES.get(model, {}).get("references"):
+    if feats.get("references"):
         if hero_ref:
             references.append(hero_ref)
             prompt = (
@@ -2198,21 +2080,17 @@ def webapp_submit_video():
 def index():
     return "Bot is running"
 
-
 @app.route("/studio")
 def studio():
     return WEBAPP_HTML
-
 
 @app.route("/health")
 def health():
     return "OK"
 
-
 @app.route("/static/uploads/<path:filename>")
 def uploaded_file(filename):
     return send_from_directory("static/uploads", filename)
-
 
 @app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
 def webhook():
@@ -2228,7 +2106,6 @@ def webhook():
             return "", 500
     return "", 403
 
-
 def set_webhook():
     if not bot or not TELEGRAM_TOKEN:
         return
@@ -2241,7 +2118,6 @@ def set_webhook():
             logging.info("Webhook set")
     except Exception as e:
         logging.error(f"Webhook err: {e}")
-
 
 Thread(target=set_webhook, daemon=True).start()
 
