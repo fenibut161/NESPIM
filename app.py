@@ -431,9 +431,19 @@ END / last_frame
     async function submitStudio() {
         const prompt = $('globalPrompt').value.trim();
         if (!prompt) { alertUser('Введите общий промпт для истории.'); return; }
-        if (!startFrame) { alertUser('Загрузите отдельный начальный кадр START.'); return; }
 
         const refsTotal = referenceImages.filter(Boolean).length + (heroRef && modelKind() !== 'kling' ? 1 : 0);
+
+        if (modelKind() === 'kling' && !startFrame) {
+            alertUser('Для Kling 3.0 Pro нужен отдельный начальный кадр START.');
+            return;
+        }
+
+        if (modelKind() !== 'kling' && !startFrame && refsTotal < 1) {
+            alertUser('Для Seedance/HappyHorse загрузите START или хотя бы один HERO/reference storyboard кадр.');
+            return;
+        }
+
         if (modelKind() !== 'kling' && refsTotal > 9) {
             alertUser('Seedance/HappyHorse принимают максимум 9 input references суммарно: HERO + reference images. START/END отдельно.');
             return;
@@ -2100,18 +2110,19 @@ def webapp_submit_video():
     if not uid or not prompt:
         return jsonify({"ok": False, "error": "Нужен user_id и промпт"}), 400
 
-    if not start_frame:
-        return jsonify({"ok": False, "error": "Загрузите отдельный начальный кадр START"}), 400
-
     max_refs = int(VIDEO_MODEL_FEATURES.get(model, {}).get("max_image_refs", 9))
     if VIDEO_MODEL_FEATURES.get(model, {}).get("references"):
         refs_count = len(reference_images) + (1 if hero_ref else 0)
         if refs_count > max_refs:
             return jsonify({"ok": False, "error": f"Максимум {max_refs} референсов суммарно: HERO + reference images"}), 400
+        if not start_frame and refs_count < 1:
+            return jsonify({"ok": False, "error": "Для Seedance/HappyHorse загрузите START или хотя бы один HERO/reference storyboard кадр"}), 400
     else:
         refs_count = 0
         hero_ref = None
         reference_images = []
+        if not start_frame:
+            return jsonify({"ok": False, "error": "Для Kling 3.0 Pro нужен отдельный начальный кадр START"}), 400
 
     caps = get_video_models_capabilities().get(model, {})
     supported_frames = caps.get("supported_frame_images") or []
@@ -2169,6 +2180,9 @@ def webapp_submit_video():
             )
         references.extend(reference_images)
 
+    # Для Seedance/HappyHorse разрешаем режим reference-only storyboard:
+    # если START не загружен, storyboard из окна reference_images идёт только как input_references,
+    # без требования first_frame. Для Kling START обязателен выше.
     Thread(target=generate_video_async, args=(uid, prompt, start_frame, end_frame, None, references), daemon=True).start()
     return jsonify({"ok": True})
 
